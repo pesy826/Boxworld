@@ -48,3 +48,7 @@ keystore.properties
 
 # ===== 表情包源素材临时目录（体积大，不入库）=====
 /temp-bqb/
+
+# ===== 开发文档 / 临时素材（不入库）=====
+/.clinerules/
+icon-source.png
