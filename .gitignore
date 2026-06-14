@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ===== 安全：签名密钥 / 密码（绝不上传公开仓库）=====
+*.keystore
+*.jks
+keystore.properties
+
+# ===== Rust / Tauri 构建产物 =====
+/src-tauri/target
+/src-tauri/gen/android/app/build
+/src-tauri/gen/android/build
+/src-tauri/gen/android/.gradle
+/src-tauri/gen/android/app/.cxx
+/src-tauri/gen/android/app/src/main/jniLibs
+/src-tauri/gen/apple
+
+# ===== 构建产物 / 安装包（走 GitHub Releases，不进 git）=====
+*.apk
+*.aab
+*.msi
+*.exe
+*.dmg
+*.deb
+*.AppImage
+
+# ===== 表情包源素材临时目录（体积大，不入库）=====
+/temp-bqb/
