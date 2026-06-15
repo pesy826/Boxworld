@@ -41,6 +41,13 @@ export interface Character {
   isContact?: boolean
   /** 角色的私有世界记忆（深思时同步进来的"我该知道但上下文没有"的事件） */
   privateMemory: string
+  /**
+   * 我对其他角色的印象/了解（第一人称）。
+   * key = 对方角色 id；value = 一句或几句话的印象（如"李四：用户的同事，话不多"）。
+   * 全局唯一、不分群（在任何群里对同一个人都用这一份）。
+   * 只在深思时随接触慢慢累积；没有记录表示"还不认识/不了解 TA"。
+   */
+  acquaintances?: Record<string, string>
   createdAt: number
   updatedAt: number
 }
@@ -68,6 +75,13 @@ export interface Chat {
   memberIds?: string[]
   /** 群聊所属的单卡世界主卡 id（在单卡模式下建的群）；全局群为空 */
   worldId?: string
+  /**
+   * 本群内每个成员的群 ID（类似微信群里各自的群昵称/标识）。
+   * key = 角色 id 或 'user'（用户自己）；value = 该成员在此群的群 ID。
+   * 群里所有成员互相可见。建群时为角色生成默认值；用户只能改自己的，
+   * 角色可在群聊中因关系变化主动改自己的（很有生活感）。
+   */
+  groupIds?: Record<string, string>
 }
 
 // ============ 消息 ============
@@ -381,6 +395,12 @@ export interface ApiEndpoint {
   baseUrl: string
   apiKey: string
   model: string
+  /**
+   * 该模型是否支持识图（vision / 多模态）。
+   * 仅主模型用：开启时聊天里的图片以 OpenAI image_url 多模态直喂给模型；
+   * 关闭（默认）时图片降级成文字 [图片：描述] 喂入，避免不支持的模型报 400。
+   */
+  vision?: boolean
 }
 
 export interface ApiConfig {
@@ -458,6 +478,11 @@ export interface Settings {
   groupChatMode?: GroupChatMode
   /** 群聊精细模式单次最多跑多少轮（默认 6）。轮数越多角色之间越能自己聊起来，但 API 开销越大 */
   groupFineMaxRounds?: number
+  /**
+   * 群聊里给每个成员注入「TA 与你的私聊近况」取最近多少条消息。
+   * 0 或未设置 = 全部（默认）；设为正数则只取最近 N 条，省 token。
+   */
+  groupMemberPrivateChatRecent?: number
   /** 语音通话配置（旧数据可能没有此字段） */
   voiceConfig?: VoiceConfig
 }

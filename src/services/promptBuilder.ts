@@ -38,6 +38,9 @@ export interface BuildPromptArgs {
 export async function buildPrompt(args: BuildPromptArgs): Promise<OpenAIMessage[]> {
   const { preset, character, userPersona, virtualNow, history, userInput, apiConfig, chatId } = args
 
+  // 主模型是否支持识图（vision）。关闭时聊天里的图片降级成文字，避免不支持的模型报 400
+  const visionEnabled = !!apiConfig.primary.vision
+
   const macroCtx: MacroContext = { character, userPersona, virtualNow }
   const filteredHistory = filterHistoryByMode(history, preset.mode)
   const activated = await activateLorebookEntries(character.lorebookId, filteredHistory, userInput || '')
@@ -75,7 +78,7 @@ export async function buildPrompt(args: BuildPromptArgs): Promise<OpenAIMessage[
     if (!slot.enabled) continue
     const built = buildSlot(slot, {
       character, userPersona, macroCtx, activated,
-      history: trimmedHistory, sceneSummary, momentsCtx,
+      history: trimmedHistory, sceneSummary, momentsCtx, visionEnabled,
     })
     if (built) messages.push(...built)
   }
@@ -161,6 +164,8 @@ interface SlotBuildCtx {
   history: Message[]
   sceneSummary?: string
   momentsCtx: MomentsCtx
+  /** 主模型是否支持识图：true=图片以 image_url 多模态喂入；false=降级为文字 */
+  visionEnabled: boolean
 }
 
 /** 取该角色生效的用户人设：自己的 userProfile → NPC 回退所属世界主卡的 → 全局昵称 */
@@ -197,7 +202,7 @@ function truncateText(text: string, max: number): string {
 }
 
 function buildSlot(slot: PromptSlot, ctx: SlotBuildCtx): OpenAIMessage[] | null {
-  const { character, userPersona, macroCtx, activated, history, sceneSummary, momentsCtx } = ctx
+  const { character, userPersona, macroCtx, activated, history, sceneSummary, momentsCtx, visionEnabled } = ctx
 
   switch (slot.role) {
     case 'static':
@@ -214,7 +219,7 @@ function buildSlot(slot: PromptSlot, ctx: SlotBuildCtx): OpenAIMessage[] | null 
     case 'user_persona': return wrapField(slot, resolveUserProfile(character, userPersona), macroCtx)
     case 'lorebook_before': return renderLorebookEntries(activated.before, macroCtx)
     case 'lorebook_after': return renderLorebookEntries(activated.after, macroCtx)
-    case 'history': return renderHistory(history, activated, macroCtx)
+    case 'history': return renderHistory(history, activated, macroCtx, visionEnabled)
     case 'scene_summary': return wrapField(slot, sceneSummary || '', macroCtx)
     case 'user_moments': return wrapField(slot, momentsCtx.userMoments, macroCtx)
     case 'character_moments': return wrapField(slot, momentsCtx.characterMoments, macroCtx)
@@ -249,7 +254,7 @@ function renderLorebookEntries(entries: LorebookEntry[], macroCtx: MacroContext)
   return messages.length > 0 ? messages : null
 }
 
-function renderHistory(history: Message[], activated: ActivatedEntries, macroCtx: MacroContext): OpenAIMessage[] {
+function renderHistory(history: Message[], activated: ActivatedEntries, macroCtx: MacroContext, visionEnabled: boolean): OpenAIMessage[] {
   const result: OpenAIMessage[] = []
   for (let i = 0; i < history.length; i++) {
     const msg = history[i]
@@ -266,9 +271,11 @@ function renderHistory(history: Message[], activated: ActivatedEntries, macroCtx
 
     const role = msg.role === 'assistant' ? 'assistant' : 'user'
 
-    // 图片消息带 imageData → 直接以多模态形式喂给模型（vision，不转描述）
-    if (msg.type === 'image' && msg.imageData) {
-      const label = role === 'user' ? '（我发了一张图片）' : '（我发了一张图片）'
+    // 图片消息带 imageData：
+    // - 主模型支持识图（visionEnabled）→ 以 OpenAI image_url 多模态直喂
+    // - 不支持 → 降级为文字 [图片：描述]（走下面 renderMessageContent），避免模型报 400
+    if (msg.type === 'image' && msg.imageData && visionEnabled) {
+      const label = '（我发了一张图片）'
       const text = msg.content ? `${label}${msg.content}` : label
       result.push({
         role,

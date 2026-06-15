@@ -45,6 +45,7 @@ export default function SettingsPage() {
           hint="用于正式对话和朋友圈内容生成。请使用质量较好的模型。"
           endpoint={apiConfig.primary}
           onChange={(patch) => updateApiEndpoint('primary', patch)}
+          showVision
         />
       </div>
 
@@ -288,12 +289,14 @@ export default function SettingsPage() {
 }
 
 function EndpointSection({
-  title, hint, endpoint, onChange,
+  title, hint, endpoint, onChange, showVision,
 }: {
   title: string
   hint: string
   endpoint: ApiEndpoint
   onChange: (patch: Partial<ApiEndpoint>) => void
+  /** 是否显示"读图（vision）"开关（仅主模型用） */
+  showVision?: boolean
 }) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
@@ -372,6 +375,23 @@ function EndpointSection({
         <div className="px-4 pb-2 text-[12px] text-red-500">{modelError}</div>
       )}
 
+      {showVision && (
+        <>
+          <SettingRow label="读图（识别图片）">
+            <button
+              onClick={() => onChange({ vision: !endpoint.vision })}
+              className={`relative w-11 h-6 rounded-full transition-colors ${endpoint.vision ? 'bg-wechat-green' : 'bg-gray-300'}`}
+              aria-label="切换读图"
+            >
+              <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${endpoint.vision ? 'translate-x-5' : ''}`} />
+            </button>
+          </SettingRow>
+          <div className="px-4 pb-2 text-[11px] text-wechat-textGray">
+            开启后聊天里用户发的图片会直接以图像喂给模型（需模型支持识图，如 gpt-4o、Claude、Gemini）。模型不支持识图就关闭——图片会降级为文字占位，避免报 400 错误。
+          </div>
+        </>
+      )}
+
       <div className="px-4 py-2">
         <button
           onClick={handleTest}
@@ -396,9 +416,11 @@ function GroupChatModeSection() {
   const settings = useSettingsStore((s) => s.settings)
   const setGroupChatMode = useSettingsStore((s) => s.setGroupChatMode)
   const setGroupFineMaxRounds = useSettingsStore((s) => s.setGroupFineMaxRounds)
+  const setGroupMemberPrivateChatRecent = useSettingsStore((s) => s.setGroupMemberPrivateChatRecent)
   if (!settings) return null
   const mode = settings.groupChatMode || 'coarse'
   const maxRounds = settings.groupFineMaxRounds ?? 6
+  const privateChatRecent = settings.groupMemberPrivateChatRecent ?? 0
   return (
     <SettingSection title="群聊模式">
       <div className="px-4 pt-2 pb-1 text-[11px] text-wechat-textGray">
@@ -426,6 +448,14 @@ function GroupChatModeSection() {
           </SettingRow>
         </>
       )}
+      <SettingRow label="群里注入成员私聊条数" hint="群聊时给每个成员注入 TA 与你的私聊近况，取最近多少条。0 = 全部（默认，最连贯）；设为正数可省 token">
+        <input
+          className="w-full text-[14px] text-right outline-none bg-transparent"
+          type="number" step="10" min="0" max="200"
+          value={privateChatRecent}
+          onChange={(e) => setGroupMemberPrivateChatRecent(parseInt(e.target.value) || 0)}
+        />
+      </SettingRow>
     </SettingSection>
   )
 }

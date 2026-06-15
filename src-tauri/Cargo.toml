@@ -1,6 +1,6 @@
 [package]
 name = "boxworld"
-version = "1.0.0"
+version = "1.0.1"
 description = "盒世界"
 authors = ["you"]
 license = ""
