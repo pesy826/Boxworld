@@ -17,6 +17,7 @@ interface SettingsStore {
   updateVoiceConfig: (patch: Partial<VoiceConfig>) => Promise<void>
   setGroupChatMode: (mode: GroupChatMode) => Promise<void>
   setGroupFineMaxRounds: (rounds: number) => Promise<void>
+  setGroupMemberPrivateChatRecent: (count: number) => Promise<void>
   setActiveUtilityPreset: (type: UtilityType, presetId: string) => Promise<void>
   setActiveSoloCharacter: (characterId: string | undefined) => Promise<void>
 
@@ -107,6 +108,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     if (!cur) return
     const clamped = Math.max(1, Math.min(30, Math.round(rounds) || 6))
     const next: Settings = { ...cur, groupFineMaxRounds: clamped }
+    await db.settings.put(next)
+    set({ settings: next })
+  },
+
+  setGroupMemberPrivateChatRecent: async (count) => {
+    const cur = get().settings
+    if (!cur) return
+    // 0 = 全部；负数归零；上限 200 防极端
+    const clamped = Math.max(0, Math.min(200, Math.round(count) || 0))
+    const next: Settings = { ...cur, groupMemberPrivateChatRecent: clamped }
     await db.settings.put(next)
     set({ settings: next })
   },

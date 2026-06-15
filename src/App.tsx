@@ -19,6 +19,7 @@ import SceneModePage from './pages/SceneModePage'
 import DebugPromptsPage from './pages/DebugPromptsPage'
 import NpcGeneratePage from './pages/NpcGeneratePage'
 import GroupCreatePage from './pages/GroupCreatePage'
+import SoloTimePage from './pages/SoloTimePage'
 import AssetLibraryPage from './pages/AssetLibraryPage'
 import VoiceCallPage from './pages/VoiceCallPage'
 import TourOverlay, { WelcomeDialog } from './components/TourOverlay'
@@ -51,6 +52,7 @@ function App() {
         <Route path="tick-log" element={<TickLogPage />} />
         <Route path="moments" element={<MomentsPage />} />
         <Route path="scene/:id" element={<SceneModePage />} />
+        <Route path="solo-time/:id" element={<SoloTimePage />} />
         <Route path="debug-prompts" element={<DebugPromptsPage />} />
         <Route path="assets" element={<AssetLibraryPage />} />
       </Route>

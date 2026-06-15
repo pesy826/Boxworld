@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronLeft, MoreHorizontal, Send, RefreshCw, Smile } from 'lucide-react'
+import { ChevronLeft, MoreHorizontal, Send, RefreshCw, Smile, ChevronRight, Plus } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { useCharacterStore } from '../stores/characterStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -14,6 +14,7 @@ import MessageEditDialog from '../components/MessageEditDialog'
 import StickerImage from '../components/StickerImage'
 import StickerPanel from '../components/StickerPanel'
 import ImageLightbox from '../components/ImageLightbox'
+import GroupMemberPicker from '../components/GroupMemberPicker'
 import { formatTime, formatDate } from '../utils/time'
 import { useVirtualTime } from '../services/useVirtualTime'
 import type { Chat, Message } from '../types'
@@ -30,7 +31,7 @@ export default function GroupChatView({ chat }: { chat: Chat }) {
 
   const [input, setInput] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [showMenu, setShowMenu] = useState(false)
+  const [showInfo, setShowInfo] = useState(false)
   const [showStickers, setShowStickers] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -184,32 +185,32 @@ export default function GroupChatView({ chat }: { chat: Chat }) {
             <div className="text-[11px] text-wechat-green leading-tight">有人正在输入...</div>
           )}
         </div>
-        <div className="p-2 -mr-2 relative">
-          <button onClick={() => setShowMenu(!showMenu)} aria-label="更多" className="block">
+        <div className="p-2 -mr-2">
+          <button onClick={() => setShowInfo(true)} aria-label="聊天信息" className="block">
             <MoreHorizontal size={22} />
           </button>
-          {showMenu && (
-            <GroupMenu
-              chat={chat}
-              onClose={() => setShowMenu(false)}
-              onClearMessages={async () => {
-                if (confirm('清空所有消息？')) {
-                  await useChatStore.getState().clearMessages(chat.id)
-                  getGroupScheduler(chat.id).reset()
-                }
-                setShowMenu(false)
-              }}
-              onDeleteGroup={async () => {
-                if (confirm('解散并删除该群聊？')) {
-                  disposeGroupScheduler(chat.id)
-                  await useChatStore.getState().deleteChat(chat.id)
-                  navigate('/chats', { replace: true })
-                }
-              }}
-            />
-          )}
         </div>
       </header>
+
+      {showInfo && (
+        <GroupInfoPanel
+          chat={chat}
+          onClose={() => setShowInfo(false)}
+          onClearMessages={async () => {
+            if (confirm('清空聊天记录？')) {
+              await useChatStore.getState().clearMessages(chat.id)
+              getGroupScheduler(chat.id).reset()
+            }
+          }}
+          onDeleteGroup={async () => {
+            if (confirm('删除并退出该群聊？')) {
+              disposeGroupScheduler(chat.id)
+              await useChatStore.getState().deleteChat(chat.id)
+              navigate('/chats', { replace: true })
+            }
+          }}
+        />
+      )}
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 scrollbar-hide">
         <GroupMessageList
@@ -455,7 +456,8 @@ function GroupBubble({
   )
 }
 
-function GroupMenu({
+/** 微信式全屏「聊天信息」页（仅 UI 展示风格，功能保留：成员管理 / 改群名 / 群昵称 / 清空 / 退出） */
+function GroupInfoPanel({
   chat, onClose, onClearMessages, onDeleteGroup,
 }: {
   chat: Chat
@@ -466,55 +468,187 @@ function GroupMenu({
   const navigate = useNavigate()
   const getCharacter = useCharacterStore((s) => s.getById)
   const userName = useSettingsStore((s) => s.settings?.userPersona.name) || '我'
+  const userAvatar = useSettingsStore((s) => s.settings?.userPersona.avatar)
   const members = (chat.memberIds || []).map((id) => getCharacter(id))
+  const [showPicker, setShowPicker] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+
+  const groupIds = chat.groupIds || {}
+  const userGroupId = groupIds['user']?.trim() || ''
+  // 聊天信息标题里的人数 = AI 成员 + 用户
+  const totalCount = members.filter(Boolean).length + 1
+
+  const goCharacter = (id: string) => { onClose(); navigate(`/character/${id}`) }
 
   const handleRename = async () => {
-    const name = prompt('修改群名：', chat.name || '')
-    if (name?.trim()) {
-      await useChatStore.getState().renameGroup(chat.id, name.trim())
-    }
-    onClose()
+    const name = prompt('修改群聊名称：', chat.name || '')
+    if (name?.trim()) await useChatStore.getState().renameGroup(chat.id, name.trim())
   }
 
+  const handleInvite = async (ids: string[]) => {
+    if (ids.length === 0) { setShowPicker(false); return }
+    const next = [...(chat.memberIds || [])]
+    for (const id of ids) if (!next.includes(id)) next.push(id)
+    await useChatStore.getState().updateGroupMembers(chat.id, next)
+    const names = ids.map((id) => getCharacter(id)?.name).filter(Boolean).join('、')
+    if (names) {
+      await useChatStore.getState().appendSystemNotice(chat.id, `${userName} 邀请 ${names} 加入了群聊`)
+      await useChatStore.getState().loadMessages(chat.id)
+    }
+    getGroupScheduler(chat.id).reset()
+    setShowPicker(false)
+  }
+
+  const handleKick = async (id: string) => {
+    const target = getCharacter(id)
+    if (!target) return
+    if (!confirm(`将「${target.name}」移出群聊？`)) return
+    const next = (chat.memberIds || []).filter((mid) => mid !== id)
+    if (next.length < 1) { alert('群里至少要保留 1 个角色成员'); return }
+    await useChatStore.getState().updateGroupMembers(chat.id, next)
+    await useChatStore.getState().appendSystemNotice(chat.id, `${userName} 将 ${target.name} 移出了群聊`)
+    await useChatStore.getState().loadMessages(chat.id)
+    getGroupScheduler(chat.id).reset()
+  }
+
+  const handleSetMyGroupId = async () => {
+    const v = prompt('我在本群的昵称（留空恢复默认）：', userGroupId)
+    if (v === null) return
+    const trimmed = v.trim()
+    await useChatStore.getState().setGroupMemberId(chat.id, 'user', trimmed)
+    const display = trimmed || userName
+    await useChatStore.getState().appendSystemNotice(chat.id, `${userName} 把自己的群昵称改成了「${display}」`)
+    await useChatStore.getState().loadMessages(chat.id)
+    getGroupScheduler(chat.id).reset()
+  }
+
+  const Row = ({ label, value, onClick }: { label: string; value?: string; onClick?: () => void }) => (
+    <button
+      onClick={onClick}
+      disabled={!onClick}
+      className="w-full flex items-center px-4 py-3.5 bg-white text-left active:bg-wechat-bg/60"
+    >
+      <span className="text-[15px] text-black">{label}</span>
+      <span className="ml-auto flex items-center gap-1 text-[14px] text-wechat-textGray max-w-[55%] truncate">
+        {value}
+        {onClick && <ChevronRight size={16} className="text-gray-300 shrink-0" />}
+      </span>
+    </button>
+  )
+
   return (
-    <>
-      <div className="fixed inset-0 z-10" onClick={onClose} />
-      <div className="absolute right-0 top-full mt-1 w-48 bg-white shadow-lg rounded border border-wechat-divider z-20 text-[14px]">
-        <div className="px-3 py-2 border-b border-wechat-divider">
-          <div className="text-[11px] text-wechat-textGray mb-1">群成员（{members.length + 1}）</div>
-          <div className="flex flex-wrap gap-1">
-            <span className="text-[12px] bg-wechat-green/10 text-wechat-green px-1.5 py-0.5 rounded">
-              {userName}（我）
-            </span>
+    <div className="fixed inset-0 z-40 bg-wechat-bg flex flex-col">
+      {/* 头部 */}
+      <header className="h-header-safe flex items-center px-2 bg-wechat-bg shrink-0">
+        <button onClick={onClose} className="p-2 -ml-2">
+          <ChevronLeft size={22} />
+        </button>
+        <div className="flex-1 text-center text-[16px] font-medium">聊天信息（{totalCount}）</div>
+        <div className="w-9" />
+      </header>
+
+      <div className="flex-1 overflow-y-auto scrollbar-hide pb-8">
+        {/* 成员九宫格 */}
+        <div className="bg-white mt-2 px-4 py-4">
+          <div className="grid grid-cols-5 gap-y-4 gap-x-2">
             {members.map((m) => m && (
-              <button
-                key={m.id}
-                onClick={() => {
-                  onClose()
-                  navigate(`/character/${m.id}`)
-                }}
-                className="text-[12px] bg-wechat-bg px-1.5 py-0.5 rounded hover:bg-wechat-divider"
-                title={m.isContact === false ? '非好友，点击可查看并加为好友' : undefined}
-              >
-                {m.name}
-                {m.isContact === false && (
-                  <span className="ml-0.5 text-[10px] text-orange-500">·非好友</span>
-                )}
-              </button>
+              <div key={m.id} className="flex flex-col items-center">
+                <button
+                  onClick={() => editMode ? handleKick(m.id) : goCharacter(m.id)}
+                  className="relative"
+                >
+                  <Avatar src={m.avatar} name={m.name} size={48} />
+                  {editMode && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center text-[10px]">
+                      −
+                    </span>
+                  )}
+                </button>
+                <span className="mt-1 text-[11px] text-wechat-textGray truncate max-w-[56px] text-center">
+                  {groupIds[m.id]?.trim() || m.name}
+                </span>
+              </div>
             ))}
+            {/* 用户自己 */}
+            <div className="flex flex-col items-center">
+              <button onClick={handleSetMyGroupId}>
+                <Avatar src={userAvatar} name={userName} size={48} />
+              </button>
+              <span className="mt-1 text-[11px] text-wechat-textGray truncate max-w-[56px] text-center">
+                {userGroupId || userName}
+              </span>
+            </div>
+            {/* 邀请成员 + 号 */}
+            {!editMode && (
+              <div className="flex flex-col items-center">
+                <button
+                  onClick={() => setShowPicker(true)}
+                  className="w-12 h-12 rounded-md border border-dashed border-gray-300 flex items-center justify-center text-gray-400"
+                >
+                  <Plus size={22} />
+                </button>
+              </div>
+            )}
+            {/* 移除成员 − 号 */}
+            <div className="flex flex-col items-center">
+              <button
+                onClick={() => setEditMode((v) => !v)}
+                className={`w-12 h-12 rounded-md border border-dashed flex items-center justify-center ${editMode ? 'border-red-300 text-red-400' : 'border-gray-300 text-gray-400'}`}
+              >
+                <MoreHorizontal size={22} />
+              </button>
+            </div>
           </div>
+          {editMode && (
+            <div className="mt-3 text-center text-[11px] text-wechat-textGray">点头像移出成员，完成后再次点击右侧按钮退出</div>
+          )}
         </div>
-        <button onClick={handleRename} className="w-full text-left px-3 py-2 hover:bg-wechat-bg">
-          修改群名
-        </button>
-        <button onClick={onClearMessages} className="w-full text-left px-3 py-2 hover:bg-wechat-bg text-red-500">
-          清空消息
-        </button>
-        <button onClick={onDeleteGroup} className="w-full text-left px-3 py-2 hover:bg-wechat-bg text-red-500">
-          解散群聊
-        </button>
+
+        {/* 群信息项 */}
+        <div className="mt-2 divide-y divide-wechat-divider">
+          <Row label="群聊名称" value={chat.name || '群聊'} onClick={handleRename} />
+          <Row label="群二维码" value="" onClick={() => { }} />
+          <Row label="群公告" value="未设置" onClick={() => { }} />
+        </div>
+
+        <div className="mt-2 divide-y divide-wechat-divider">
+          <Row label="我在本群的昵称" value={userGroupId || userName} onClick={handleSetMyGroupId} />
+          <Row label="显示群成员昵称" value="" />
+        </div>
+
+        <div className="mt-2 divide-y divide-wechat-divider">
+          <Row label="设置当前聊天背景" value="" onClick={() => { }} />
+          <Row label="查找聊天记录" value="" onClick={() => { }} />
+        </div>
+
+        <div className="mt-2">
+          <button
+            onClick={onClearMessages}
+            className="w-full py-3.5 bg-white text-center text-[15px] text-black active:bg-wechat-bg/60"
+          >
+            清空聊天记录
+          </button>
+        </div>
+
+        <div className="mt-2">
+          <button
+            onClick={onDeleteGroup}
+            className="w-full py-3.5 bg-white text-center text-[15px] text-red-500 active:bg-wechat-bg/60"
+          >
+            删除并退出
+          </button>
+        </div>
       </div>
-    </>
+
+      {showPicker && (
+        <GroupMemberPicker
+          existingMemberIds={chat.memberIds || []}
+          worldId={chat.worldId}
+          onConfirm={handleInvite}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
+    </div>
   )
 }
 

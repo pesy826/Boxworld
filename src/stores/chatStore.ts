@@ -21,6 +21,8 @@ interface ChatStore {
     updateGroupMembers: (chatId: string, memberIds: string[]) => Promise<void>
     /** 改群名 */
     renameGroup: (chatId: string, name: string) => Promise<void>
+    /** 设置群内某成员的群 ID（memberKey = 角色 id 或 'user'） */
+    setGroupMemberId: (chatId: string, memberKey: string, groupId: string) => Promise<void>
 
     appendUserMessage: (chatId: string, content: string) => Promise<Message>
     /** 用户发表情（content = 表情描述名） */
@@ -97,6 +99,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     createGroupChat: async (name, memberIds, worldId) => {
         const now = timeService.now()
+        // 建群时为每个角色成员生成默认群 ID（默认 = 角色名；角色之后可在群里自行改）
+        const groupIds: Record<string, string> = {}
+        for (const id of memberIds) {
+            const c = useCharacterStore.getState().getById(id)
+            if (c) groupIds[id] = c.name
+        }
         const chat: Chat = {
             id: uuid(),
             characterId: '',
@@ -109,6 +117,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             name,
             memberIds: [...memberIds],
             worldId,
+            groupIds,
         }
         await db.chats.add(chat)
         set((s) => ({ chats: [chat, ...s.chats] }))
@@ -127,6 +136,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         const chat = get().chats.find((c) => c.id === chatId)
         if (!chat) return
         const next = { ...chat, name }
+        await db.chats.put(next)
+        set((s) => ({ chats: s.chats.map((c) => c.id === chatId ? next : c) }))
+    },
+
+    setGroupMemberId: async (chatId, memberKey, groupId) => {
+        const chat = get().chats.find((c) => c.id === chatId)
+        if (!chat) return
+        const nextIds = { ...(chat.groupIds || {}) }
+        const trimmed = groupId.trim()
+        if (trimmed) nextIds[memberKey] = trimmed
+        else delete nextIds[memberKey]
+        const next = { ...chat, groupIds: nextIds }
         await db.chats.put(next)
         set((s) => ({ chats: s.chats.map((c) => c.id === chatId ? next : c) }))
     },

@@ -227,7 +227,7 @@ function UserProfileSection({ character }: {
           className="w-full px-2 py-2 bg-wechat-bg rounded text-[13px] outline-none resize-y"
           placeholder={character.isNpc
             ? '留空则使用所属世界主卡的用户人设。例：刚搬来公寓的新住户'
-            : '例：裴松源，刚认识的网友 / TA 的儿子，20 岁大学生。留空则只使用全局昵称'}
+            : '例：{{user}}，刚认识的网友 / TA 的儿子，20 岁大学生。留空则只使用全局昵称'}
         />
         <div className="flex gap-2 mt-2 justify-end">
           <button

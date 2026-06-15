@@ -7,8 +7,12 @@ import { getActiveUtilityPrompt } from './utilityPrompts'
 import { buildStickerListText, buildChatImageHint } from './promptBuilder'
 import { generateComfyImage, generateImagePrompt, isComfyAvailable } from './comfyService'
 import { timeService } from './timeService'
+import { useSceneSummaryStore } from '../stores/sceneSummaryStore'
 import { uuid } from '../utils/id'
 import type { Chat, Character, Message } from '../types'
+
+/** 每个成员注入的场景剧情回忆字符上限 */
+const MEMBER_SCENE_SUMMARY_MAX = 1500
 
 /** 群聊上下文取最近多少条消息 */
 const MAX_GROUP_HISTORY = 60
@@ -19,6 +23,56 @@ const MEMBER_PERSONALITY_MAX = 2000
 const MEMBER_SCENARIO_MAX = 1500
 const MEMBER_MEMORY_MAX = 1000
 
+/** 每个成员注入的与用户私聊近况字符上限（防止极端长导致 prompt 爆炸） */
+const MEMBER_PRIVATE_CHAT_MAX = 8000
+
+/**
+ * 取某成员与用户单聊会话的私聊近况，拼成文本。
+ * 取多少条由 settings.groupMemberPrivateChatRecent 决定（0/未设=全部）。
+ */
+async function buildMemberPrivateChatText(memberId: string, userName: string): Promise<string> {
+  try {
+    const chat = useChatStore.getState().chats.find(
+      (c) => c.characterId === memberId && (c.type ?? 'single') === 'single',
+    )
+    if (!chat) return ''
+    let msgs = useChatStore.getState().messagesByChat[chat.id]
+    if (!msgs) {
+      msgs = await db.messages.where('chatId').equals(chat.id).toArray()
+      msgs.sort((a, b) => a.sequence - b.sequence)
+    }
+    let usable = msgs.filter((m) => m.type === 'text' || m.type === 'sticker' || m.type === 'image')
+    if (usable.length === 0) return ''
+    // 条数限制：0 或未设置 = 全部；正数则只取最近 N 条
+    const recent = useSettingsStore.getState().settings?.groupMemberPrivateChatRecent ?? 0
+    if (recent > 0) usable = usable.slice(-recent)
+    const memberName = useCharacterStore.getState().getById(memberId)?.name || 'TA'
+    const lines = usable.map((m) => {
+      const who = m.role === 'user' ? userName : memberName
+      const content = m.type === 'sticker' ? `[表情：${m.content}]`
+        : m.type === 'image' ? `[图片：${m.content || '图片'}]`
+          : m.content
+      return `${who}: ${content}`
+    })
+    return truncate(lines.join('\n'), MEMBER_PRIVATE_CHAT_MAX)
+  } catch {
+    return ''
+  }
+}
+
+/** 取某成员与用户单聊会话的场景剧情回忆（第一人称回忆），让线下经历在群里也被记得 */
+function buildMemberSceneSummary(memberId: string): string {
+  try {
+    const chat = useChatStore.getState().chats.find(
+      (c) => c.characterId === memberId && (c.type ?? 'single') === 'single',
+    )
+    if (!chat) return ''
+    return useSceneSummaryStore.getState().get(chat.id)?.content?.trim() || ''
+  } catch {
+    return ''
+  }
+}
+
 // ==================== Prompt 构建 ====================
 
 async function buildGroupPrompt(
@@ -26,6 +80,9 @@ async function buildGroupPrompt(
   mode: 'coarse' | 'fine' = 'coarse',
   opts?: { windingDown?: boolean },
 ): Promise<Array<{ role: 'system' | 'user'; content: string }>> {
+  // 精细模式走独立的"第一人称代入"构建逻辑
+  if (mode === 'fine') return buildFineGroupPrompt(chat, opts)
+
   const settings = useSettingsStore.getState().settings
   if (!settings) throw new Error('设置未加载')
 
@@ -36,14 +93,17 @@ async function buildGroupPrompt(
 
   if (members.length === 0) throw new Error('群里没有角色成员')
 
+  // 本群内各成员的群 ID（key=角色 id 或 'user'；缺省回退名字/昵称）
+  const groupIds = chat.groupIds || {}
+  const groupIdOf = (id: string, fallback: string) => groupIds[id]?.trim() || fallback
+  const userGroupId = groupIdOf('user', userName)
+
   // 群时间：单卡世界群用主卡时间，全局群用全局时间
   const worldChar = chat.worldId ? useCharacterStore.getState().getById(chat.worldId) : undefined
   const now = worldChar ? timeService.nowForCharacter(worldChar) : timeService.now()
   const timeText = new Date(now).toLocaleString('zh-CN', { hour12: false })
 
-  let template = mode === 'fine'
-    ? (getActiveUtilityPrompt('group_fine') || getActiveUtilityPrompt('group_chat'))
-    : getActiveUtilityPrompt('group_chat')
+  let template = getActiveUtilityPrompt('group_chat')
   if (!template) throw new Error('未找到群聊扮演 prompt')
   template = template
     .replaceAll('{{user}}', userName)
@@ -73,11 +133,31 @@ async function buildGroupPrompt(
   parts.push('\n【群成员人设】（speaker 字段必须使用这些名字）')
   for (const m of members) {
     parts.push(`\n## ${m.name}${m.npcRelation ? `（${m.npcRelation}）` : ''}`)
+    // 本群内该成员当前的群 ID（类似微信群昵称，群里所有人都看得到）
+    parts.push(`本群群ID：${groupIdOf(m.id, m.name)}`)
     if (m.description?.trim()) parts.push(`描述：${truncate(m.description, MEMBER_DESC_MAX)}`)
     if (m.personality?.trim()) parts.push(`性格：${truncate(m.personality, MEMBER_PERSONALITY_MAX)}`)
     if (m.scenario?.trim()) parts.push(`背景：${truncate(m.scenario, MEMBER_SCENARIO_MAX)}`)
     if (m.privateMemory?.trim()) parts.push(`TA 知道的近况：${truncate(m.privateMemory, MEMBER_MEMORY_MAX)}`)
+    // 该成员与用户的场景（线下）剧情回忆——让线下经历的事在群里也被记得
+    const sceneText = buildMemberSceneSummary(m.id)
+    if (sceneText) parts.push(`TA 和 ${userName} 线下相处的回忆：\n${truncate(sceneText, MEMBER_SCENE_SUMMARY_MAX)}`)
+    // 该成员与用户的私聊近况（让群聊和私聊上下文打通——前脚私聊聊的，群里也记得）
+    const privateChat = await buildMemberPrivateChatText(m.id, userName)
+    if (privateChat) parts.push(`TA 最近和 ${userName} 的私聊记录：\n${privateChat}`)
   }
+
+  // 本群所有人的群 ID 一览（含用户），群里成员都能看到彼此的群 ID
+  const groupIdLines = [`${userName}（用户） → ${userGroupId}`]
+  for (const m of members) groupIdLines.push(`${m.name} → ${groupIdOf(m.id, m.name)}`)
+  parts.push(`\n【本群成员的群ID一览】（群里成员都能看到彼此当前的群ID）\n${groupIdLines.join('\n')}`)
+
+  // 群 ID 玩法引导：角色可以因关系/心情/事件给自己改一个群 ID（很有生活感）。
+  parts.push(
+    '\n【关于群ID】群ID 是每个人在「这个群」里给自己起的昵称/标识（类似微信群昵称），每个群可以不一样，群里所有人可见。' +
+    '你可以在自己发言时，因为和某人关系变化、心情、玩梗等原因，给自己改一个新的群ID（比如改成针对某人的昵称来调侃 TA）。' +
+    '若要改，在你那条 message 里加字段 "group_id_update":"新的群ID"（只能改你自己的，别替别人改）。不想改就别带这个字段。',
+  )
 
   // 可用表情列表
   const stickerText = buildStickerListText()
@@ -87,20 +167,15 @@ async function buildGroupPrompt(
   const imageHint = buildChatImageHint()
   if (imageHint) parts.push(`\n${imageHint}`)
 
-  // 精细模式：群里不是人人在线、句句都接，鼓励克制（看到也可不回），冷场是常态
-  if (mode === 'fine') {
-    parts.push('\n【群聊氛围】像真实微信群：不是所有人都在线、都盯着手机，大量时间是没人说话的。角色可以互相搭话/接梗，但更多时候是"看到了但没必要回"。本轮没人有强烈动机开口，就让 messages 返回空数组让群安静下来——这很正常，不要为了热闹硬找人发言。')
-  }
-
   // 临近轮数上限：让对话自然收尾，而不是被硬切断
   if (opts?.windingDown) {
     parts.push('\n【收尾提示】这轮群聊差不多该告一段落了。请让正在发言的角色用符合人设的方式自然地把话题收住——比如说自己要去吃饭/睡觉/有事先走/下次再聊之类，给一个自然的结束，而不是戛然而止。收尾后本轮之后不要再开启新话题。')
   }
 
-  // 历史消息
+  // 历史消息（含系统提示——拉人/踢人等事件，让 AI 知道群成员变动）
   const all = useChatStore.getState().messagesByChat[chat.id] || []
   const history = all
-    .filter((m) => m.type === 'text' || m.type === 'sticker' || m.type === 'image')
+    .filter((m) => m.type === 'text' || m.type === 'sticker' || m.type === 'image' || m.type === 'system_notice')
     .slice(-MAX_GROUP_HISTORY)
 
   const histLines: string[] = ['【群聊记录】']
@@ -108,6 +183,10 @@ async function buildGroupPrompt(
     histLines.push('（群刚建立，还没有人说话）')
   } else {
     for (const m of history) {
+      if (m.type === 'system_notice') {
+        histLines.push(`（系统提示）${m.content}`)
+        continue
+      }
       const who = m.role === 'user' ? userName : senderName(m, members)
       const content = m.type === 'sticker' ? `[表情：${m.content}]`
         : m.type === 'image' ? `[图片：${m.content || '图片'}]`
@@ -116,6 +195,144 @@ async function buildGroupPrompt(
     }
   }
   histLines.push('\n请根据上面的群聊记录，决定接下来哪些角色发言、说什么。严格按 JSON 格式输出。')
+
+  return [
+    { role: 'system', content: parts.join('\n') },
+    { role: 'user', content: histLines.join('\n') },
+  ]
+}
+
+/**
+ * 精细模式 prompt：单次调用 + 第一人称代入。
+ * AI 先判断此刻该谁开口，然后【完全变成那个人】用第一人称发言。
+ * 每个成员各一段人设；并把"该成员对其他人的了解"（acquaintances，随接触递增）逐段列出，
+ * 让被选中扮演的人既深度代入自己，又知道群里其他人是谁、跟自己什么关系。
+ */
+async function buildFineGroupPrompt(
+  chat: Chat,
+  opts?: { windingDown?: boolean },
+): Promise<Array<{ role: 'system' | 'user'; content: string }>> {
+  const settings = useSettingsStore.getState().settings
+  if (!settings) throw new Error('设置未加载')
+
+  const userName = settings.userPersona.name || '用户'
+  const members = (chat.memberIds || [])
+    .map((id) => useCharacterStore.getState().getById(id))
+    .filter((c): c is Character => !!c)
+  if (members.length === 0) throw new Error('群里没有角色成员')
+
+  const groupIds = chat.groupIds || {}
+  const groupIdOf = (id: string, fallback: string) => groupIds[id]?.trim() || fallback
+  const userGroupId = groupIdOf('user', userName)
+
+  const worldChar = chat.worldId ? useCharacterStore.getState().getById(chat.worldId) : undefined
+  const now = worldChar ? timeService.nowForCharacter(worldChar) : timeService.now()
+  const timeText = new Date(now).toLocaleString('zh-CN', { hour12: false })
+
+  let template = getActiveUtilityPrompt('group_fine') || getActiveUtilityPrompt('group_chat')
+  if (!template) throw new Error('未找到群聊扮演 prompt')
+  template = template
+    .replaceAll('{{user}}', userName)
+    .replaceAll('{{datetime}}', timeText)
+
+  const parts: string[] = [template]
+
+  parts.push(`\n【当前时间】${timeText}`)
+  parts.push(`【群名】${chat.name || '群聊'}`)
+
+  // 群里有哪些人（供 AI 判断"该谁开口"）
+  const roster = [`${userGroupId}（用户本人，你不能扮演用户）`]
+  for (const m of members) roster.push(groupIdOf(m.id, m.name))
+  parts.push(`\n【这个群里的人】${roster.join('、')}`)
+
+  // 用户信息
+  parts.push('\n【用户信息】')
+  parts.push(`昵称：${userName}`)
+  const userProfile = resolveUserProfileFor(worldChar || members[0])
+  if (userProfile) parts.push(`人设：${userProfile}`)
+
+  // 世界事件记录（单卡世界群）
+  if (chat.worldId) {
+    const ws = await db.worldSummaries.get(chat.worldId)
+    if (ws?.content?.trim()) {
+      parts.push('\n【这个世界已发生的事件记录】')
+      parts.push(ws.content.trim())
+    }
+  }
+
+  // 每个成员一段：人设 + TA 对其他人的了解（第一人称印象）
+  parts.push('\n【群成员档案】（你被选中扮演谁，就用谁这一段，完全代入成 TA）')
+  for (const m of members) {
+    parts.push(`\n========== ${m.name}${m.npcRelation ? `（${m.npcRelation}）` : ''} ==========`)
+    parts.push(`本群群ID：${groupIdOf(m.id, m.name)}`)
+    if (m.description?.trim()) parts.push(`你的描述：${truncate(m.description, MEMBER_DESC_MAX)}`)
+    if (m.personality?.trim()) parts.push(`你的性格：${truncate(m.personality, MEMBER_PERSONALITY_MAX)}`)
+    if (m.scenario?.trim()) parts.push(`你的背景：${truncate(m.scenario, MEMBER_SCENARIO_MAX)}`)
+    if (m.privateMemory?.trim()) parts.push(`你知道的近况：${truncate(m.privateMemory, MEMBER_MEMORY_MAX)}`)
+    // 与用户的私聊/场景回忆（让线下&私聊经历在群里也被记得）
+    const sceneText = buildMemberSceneSummary(m.id)
+    if (sceneText) parts.push(`你和 ${userName} 线下相处的回忆：\n${truncate(sceneText, MEMBER_SCENE_SUMMARY_MAX)}`)
+    const privateChat = await buildMemberPrivateChatText(m.id, userName)
+    if (privateChat) parts.push(`你最近和 ${userName} 的私聊：\n${privateChat}`)
+
+    // 你对群里其他人的了解（acquaintances，随接触递增；没记录=还不了解 TA）
+    const acq = m.acquaintances || {}
+    const lines: string[] = []
+    for (const other of members) {
+      if (other.id === m.id) continue
+      const impression = acq[other.id]?.trim()
+      if (impression) lines.push(`- ${other.name}：${impression}`)
+      else lines.push(`- ${other.name}：（你和 TA 还不熟，了解不多）`)
+    }
+    // 对用户的了解：用 userProfile / npcRelation 作为已知关系
+    if (lines.length > 0) {
+      parts.push(`你对群里其他人的了解（只凭这些，没写的细节你并不知道）：\n${lines.join('\n')}`)
+    }
+  }
+
+  // 群 ID 一览
+  const groupIdLines = [`${userName}（用户） → ${userGroupId}`]
+  for (const m of members) groupIdLines.push(`${m.name} → ${groupIdOf(m.id, m.name)}`)
+  parts.push(`\n【本群成员的群ID一览】\n${groupIdLines.join('\n')}`)
+  parts.push(
+    '\n【关于群ID】群ID 是你在这个群的昵称，群里所有人可见。你可以因关系/心情/玩梗给自己改一个新群ID，' +
+    '在你那条 message 里加字段 "group_id_update":"新群ID"（只改你自己的）。不改就别带这个字段。',
+  )
+
+  // 表情、发图能力
+  const stickerText = buildStickerListText()
+  if (stickerText) parts.push(`\n${stickerText}`)
+  const imageHint = buildChatImageHint()
+  if (imageHint) parts.push(`\n${imageHint}`)
+
+  // 群聊冷场是常态
+  parts.push('\n【群聊氛围】像真实微信群：不是所有人都在线、盯着手机，大量时间没人说话。没人此刻真有冲动开口，就让 messages 返回空数组，让群安静下来——这很正常，别为了热闹硬找人发言。')
+
+  // 收尾提示
+  if (opts?.windingDown) {
+    parts.push('\n【收尾提示】这轮群聊差不多该告一段落了。请让正在发言的角色用符合人设的方式自然把话题收住（去吃饭/睡觉/有事先走/下次再聊等），给一个自然的结束，收尾后不要再开启新话题。')
+  }
+
+  // 历史
+  const all = useChatStore.getState().messagesByChat[chat.id] || []
+  const history = all
+    .filter((m) => m.type === 'text' || m.type === 'sticker' || m.type === 'image' || m.type === 'system_notice')
+    .slice(-MAX_GROUP_HISTORY)
+
+  const histLines: string[] = ['【群聊记录】']
+  if (history.length === 0) {
+    histLines.push('（群刚建立，还没有人说话）')
+  } else {
+    for (const m of history) {
+      if (m.type === 'system_notice') { histLines.push(`（系统提示）${m.content}`); continue }
+      const who = m.role === 'user' ? userName : senderName(m, members)
+      const content = m.type === 'sticker' ? `[表情：${m.content}]`
+        : m.type === 'image' ? `[图片：${m.content || '图片'}]`
+          : m.content
+      histLines.push(`${who}: ${content}`)
+    }
+  }
+  histLines.push('\n现在：先判断此刻群里最该开口的是谁（只选 1 个人），然后完全变成那个人，用 TA 的第一人称发言。speaker 写那个人的名字。没人该说话就 messages 给空数组。严格按 JSON 输出。')
 
   return [
     { role: 'system', content: parts.join('\n') },
@@ -157,6 +374,8 @@ export interface GroupReplyItem {
   content: string
   /** type=image 时的英文文生图提示词 */
   imagePrompt?: string
+  /** 该角色本次想把自己的群 ID 改成什么（很有生活感；只改自己的） */
+  groupIdUpdate?: string
 }
 
 function parseGroupReply(raw: string, members: Character[]): GroupReplyItem[] {
@@ -183,6 +402,9 @@ function parseGroupReply(raw: string, members: Character[]): GroupReplyItem[] {
       if (!member) continue   // 不认识的发言人直接丢弃
       let type = m.type === 'sticker' ? 'sticker' : m.type === 'image' ? 'image' : 'text'
       const imagePrompt = typeof m.image_prompt === 'string' ? m.image_prompt.trim() : undefined
+      // 角色想改自己的群 ID（只接受字符串，限长 30）
+      const giRaw = typeof m.group_id_update === 'string' ? m.group_id_update.trim() : ''
+      const groupIdUpdate = giRaw ? giRaw.slice(0, 30) : undefined
 
       // 兜底：模型常把表情写成纯 [表情名] 内联在 text 里（type 仍标 text）。
       // 若整条 content 就是 [xxx]，剥掉括号当作表情发送（渲染成表情图，查不到再回退文字）。
@@ -196,9 +418,9 @@ function parseGroupReply(raw: string, members: Character[]): GroupReplyItem[] {
 
       if (type === 'image' && !imagePrompt) {
         // 图片消息缺提示词 → 降级为文字
-        result.push({ senderId: member.id, type: 'text', content })
+        result.push({ senderId: member.id, type: 'text', content, groupIdUpdate })
       } else {
-        result.push({ senderId: member.id, type: type as 'text' | 'sticker' | 'image', content, imagePrompt })
+        result.push({ senderId: member.id, type: type as 'text' | 'sticker' | 'image', content, imagePrompt, groupIdUpdate })
       }
     }
     return result
@@ -583,6 +805,8 @@ class GroupChatScheduler {
         }
 
         const item = queue.shift()!
+        // 角色发言时若想改自己的群 ID，先应用（发系统提示 + 写回）
+        if (item.groupIdUpdate) await this.applyGroupIdUpdate(item.senderId, item.groupIdUpdate)
         if (item.type === 'image' && item.imagePrompt && isComfyAvailable()) {
           let imageData: string | undefined
           try {
@@ -647,6 +871,9 @@ class GroupChatScheduler {
 
     const item = this.queue.shift()!
     const batchId = this.currentBatchId || uuid()
+
+    // 角色发言时若想改自己的群 ID，先应用（发系统提示 + 写回）
+    if (item.groupIdUpdate) await this.applyGroupIdUpdate(item.senderId, item.groupIdUpdate)
 
     if (item.type === 'image' && item.imagePrompt && isComfyAvailable()) {
       // 群聊图片消息：分发时实时出图；失败降级为文字
@@ -718,6 +945,23 @@ class GroupChatScheduler {
       this.abortController = null
     }
     this.awaitingResponse = false
+  }
+
+  /**
+   * 应用某角色对自己群 ID 的修改：写回 chat.groupIds + 发一条系统提示（UI 显示 + AI 可见）。
+   * 只改自己的；新旧相同则忽略。
+   */
+  private async applyGroupIdUpdate(senderId: string, newGroupId?: string): Promise<void> {
+    const gid = (newGroupId || '').trim()
+    if (!gid) return
+    const chat = useChatStore.getState().chats.find((c) => c.id === this.chatId)
+    if (!chat) return
+    const member = useCharacterStore.getState().getById(senderId)
+    if (!member) return
+    const oldId = (chat.groupIds || {})[senderId]?.trim() || member.name
+    if (oldId === gid) return
+    await useChatStore.getState().setGroupMemberId(this.chatId, senderId, gid)
+    await useChatStore.getState().appendSystemNotice(this.chatId, `${member.name} 把自己的群昵称改成了「${gid}」`)
   }
 
   private notify(): void {

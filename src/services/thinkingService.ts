@@ -33,6 +33,8 @@ interface ThinkingReply {
   comment_replies: Array<{ moment_id: string; content: string }>
   user_moment_interactions: Array<{ moment_id: string; action: 'like' | 'comment'; content?: string }>
   memory_sync: string[]
+  /** 对其他角色印象的更新（who=对方名字，impression=覆盖式完整印象） */
+  acquaintance_updates: Array<{ who: string; impression: string }>
   mood?: string
   internal_notes?: string
 }
@@ -153,6 +155,8 @@ interface ThinkingContext {
   worldSummaryText: string
   /** 角色现有的私有记忆 */
   privateMemoryText: string
+  /** 我对其他角色的现有印象文本（每行"名字：印象"），供 AI 做覆盖式更新 */
+  acquaintancesText: string
 }
 
 async function buildContext(character: Character): Promise<ThinkingContext> {
@@ -204,11 +208,25 @@ async function buildContext(character: Character): Promise<ThinkingContext> {
     worldSummaryText = ws?.content?.trim() || ''
   }
 
+  // 我对其他角色的现有印象（acquaintances：key=对方角色 id）
+  let acquaintancesText = ''
+  const acq = character.acquaintances || {}
+  const acqLines: string[] = []
+  for (const [otherId, impression] of Object.entries(acq)) {
+    const imp = (impression || '').trim()
+    if (!imp) continue
+    const other = useCharacterStore.getState().getById(otherId)
+    if (!other) continue
+    acqLines.push(`${other.name}：${imp}`)
+  }
+  if (acqLines.length > 0) acquaintancesText = acqLines.join('\n')
+
   return {
     currentTimeText, sinceLastInteractionText,
     recentHistory, ownMoments, userMoments, pendingCommentMoments,
     worldSummaryText,
     privateMemoryText: character.privateMemory?.trim() || '',
+    acquaintancesText,
   }
 }
 
@@ -265,6 +283,12 @@ function buildUserPromptContent(ctx: ThinkingContext): string {
     parts.push('（对比上面两段：世界事件记录里如果有"按我的身份本应知道、但我私有记忆里没有"的事件，用 memory_sync 字段逐条同步给我）')
   }
 
+  if (ctx.acquaintancesText) {
+    parts.push('\n【我对其他人的现有印象】')
+    parts.push(ctx.acquaintancesText)
+    parts.push('（如果通过最近的接触，我对其中某人有了新的、值得记住的了解，用 acquaintance_updates 字段更新——给出覆盖式的完整新印象。没新了解就别动。）')
+  }
+
   parts.push('\n请综合以上信息，决定你此刻要做什么。')
   return parts.join('\n')
 }
@@ -314,6 +338,12 @@ function parseThinkingReply(raw: string): ThinkingReply | null {
     const memorySync = Array.isArray(obj.memory_sync)
       ? obj.memory_sync.map((x: any) => String(x ?? '').trim()).filter((x: string) => x)
       : []
+    const acquaintanceUpdates = Array.isArray(obj.acquaintance_updates)
+      ? obj.acquaintance_updates.map((a: any) => ({
+        who: String(a?.who ?? '').trim(),
+        impression: String(a?.impression ?? '').trim(),
+      })).filter((a: any) => a.who && a.impression)
+      : []
     return {
       private_messages: privateMessages,
       should_post_moment: !!obj.should_post_moment,
@@ -324,6 +354,7 @@ function parseThinkingReply(raw: string): ThinkingReply | null {
       comment_replies: commentReplies,
       user_moment_interactions: userInteractions,
       memory_sync: memorySync,
+      acquaintance_updates: acquaintanceUpdates,
       mood: typeof obj.mood === 'string' ? obj.mood : undefined,
       internal_notes: typeof obj.internal_notes === 'string' ? obj.internal_notes : undefined,
     }
@@ -426,7 +457,35 @@ async function applyThinkingResult(
     }
   }
 
+  // 6. 角色间印象更新：把对其他角色的新印象写入 acquaintances（覆盖式，单条 ≤200 字）
+  if (parsed.acquaintance_updates.length > 0) {
+    for (const upd of parsed.acquaintance_updates) {
+      const other = resolveCharacterByName(upd.who, character.id)
+      if (!other) continue   // 匹配不到真实角色 → 忽略，绝不凭空建
+      await useCharacterStore.getState().updateAcquaintance(character.id, other.id, upd.impression)
+    }
+  }
+
   return { appliedPrivateMessages, appliedMoment, appliedCommentReplies, appliedUserInteractions, appliedMemorySync }
+}
+
+/**
+ * 按名字解析一个【真实存在的其他角色】（用于 acquaintance_updates 的 who）。
+ * 精确匹配 → 去括号注释后精确匹配；匹配不到返回 undefined（不凭空创建）。
+ * 排除角色自己。
+ */
+function resolveCharacterByName(name: string, selfId: string): Character | undefined {
+  const trimmed = name.trim()
+  if (!trimmed) return undefined
+  const all = useCharacterStore.getState().characters
+  const exact = all.find((c) => c.id !== selfId && c.name === trimmed)
+  if (exact) return exact
+  const stripped = trimmed.replace(/[（(【\[].*$/, '').trim()
+  if (stripped && stripped !== trimmed) {
+    const e2 = all.find((c) => c.id !== selfId && c.name === stripped)
+    if (e2) return e2
+  }
+  return undefined
 }
 
 /** ComfyUI 可用时，给深思 prompt 动态追加配图能力说明（移动端/未启用时不注入，AI 不会输出相关字段） */

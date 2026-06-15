@@ -229,6 +229,14 @@ class ChatScheduler {
                 return { ok: true }
             }
 
+            // 防复读：模型在低信息量输入（如用户只发了个表情）时，偶尔会把上一批回复原样再发一遍。
+            // 若这一批与历史中紧邻的上一批 assistant 消息内容完全一致，则丢弃（对话不前进，等用户给新内容）。
+            if (isDuplicateOfLastAssistantBatch(this.chatId, parsed.messages)) {
+                console.log('[scheduler] 检测到与上一批 assistant 回复完全重复，已丢弃防复读')
+                this.notify()
+                return { ok: true }
+            }
+
             this.assistantQueue = parsed.messages.map((m) => ({
                 type: m.type, content: m.content, imagePrompt: m.imagePrompt,
                 mood: parsed.mood, sceneHint: parsed.sceneHint ?? null,
@@ -344,6 +352,35 @@ class ChatScheduler {
     private notify(): void {
         this.listeners.forEach((l) => l())
     }
+}
+
+/**
+ * 判断"本批解析出的消息"是否与该会话历史里【紧邻的上一批 assistant 消息】内容完全相同。
+ * 用于拦截模型在低信息量输入时的复读退化。逐条比对 type+content，全等才算重复。
+ */
+function isDuplicateOfLastAssistantBatch(
+    chatId: string,
+    newMessages: Array<{ type: string; content: string }>,
+): boolean {
+    if (newMessages.length === 0) return false
+    const history = useChatStore.getState().messagesByChat[chatId] || []
+    // 从末尾取出连续的一段 assistant 消息（跳过末尾可能的非 assistant）
+    const lastBatch: Array<{ type: string; content: string }> = []
+    for (let i = history.length - 1; i >= 0; i--) {
+        const m = history[i]
+        if (m.role !== 'assistant') {
+            if (lastBatch.length > 0) break
+            continue
+        }
+        if (m.type !== 'text' && m.type !== 'sticker' && m.type !== 'image') break
+        lastBatch.unshift({ type: m.type, content: m.content })
+    }
+    if (lastBatch.length !== newMessages.length) return false
+    for (let i = 0; i < newMessages.length; i++) {
+        if (lastBatch[i].type !== newMessages[i].type) return false
+        if (lastBatch[i].content.trim() !== newMessages[i].content.trim()) return false
+    }
+    return true
 }
 
 function pickPreset(character: Character, mode: 'im' | 'scene'): Preset | undefined {

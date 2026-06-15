@@ -11,6 +11,8 @@ interface CharacterStore {
   remove: (id: string) => Promise<void>
   update: (id: string, patch: Partial<Character>) => Promise<void>
   toggleMute: (id: string) => Promise<void>
+  /** 更新「ownerId 对 aboutId 的印象」（单条 ≤200 字，超出截断）；空内容则删除该印象 */
+  updateAcquaintance: (ownerId: string, aboutId: string, impression: string) => Promise<void>
   getById: (id: string) => Character | undefined
 
   /** 主卡（非 NPC） */
@@ -74,6 +76,23 @@ export const useCharacterStore = create<CharacterStore>((set, get) => ({
       },
     )
     set((s) => ({ characters: s.characters.filter((c) => c.id !== id && c.parentWorldId !== id) }))
+    // 清理其他角色对「被删角色」的印象（acquaintances 里指向 removedIds 的条目）
+    try {
+      const remaining = get().characters
+      for (const c of remaining) {
+        if (!c.acquaintances) continue
+        let changed = false
+        const next = { ...c.acquaintances }
+        for (const rid of removedIds) {
+          if (rid in next) { delete next[rid]; changed = true }
+        }
+        if (changed) {
+          const merged = { ...c, acquaintances: next, updatedAt: Date.now() }
+          await db.characters.put(merged)
+          set((s) => ({ characters: s.characters.map((x) => (x.id === c.id ? merged : x)) }))
+        }
+      }
+    } catch { /* 忽略 */ }
     // 释放该角色（及其世界 NPC）占用的头像库头像
     try {
       const { useAvatarLibStore } = await import('./assetStore')
@@ -105,6 +124,18 @@ export const useCharacterStore = create<CharacterStore>((set, get) => ({
     const merged = { ...target, muted: !target.muted, updatedAt: Date.now() }
     await db.characters.put(merged)
     set((s) => ({ characters: s.characters.map((c) => (c.id === id ? merged : c)) }))
+  },
+
+  updateAcquaintance: async (ownerId, aboutId, impression) => {
+    const target = get().characters.find((c) => c.id === ownerId)
+    if (!target || !aboutId || ownerId === aboutId) return
+    const text = impression.trim().slice(0, 200)
+    const next = { ...(target.acquaintances || {}) }
+    if (text) next[aboutId] = text
+    else delete next[aboutId]
+    const merged = { ...target, acquaintances: next, updatedAt: Date.now() }
+    await db.characters.put(merged)
+    set((s) => ({ characters: s.characters.map((c) => (c.id === ownerId ? merged : c)) }))
   },
 
   getById: (id) => get().characters.find((c) => c.id === id),
