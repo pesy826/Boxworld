@@ -143,7 +143,8 @@ export default function PresetEditPage() {
                         onClick={async () => {
                             try {
                                 const { exportPreset } = await import('../services/backupService')
-                                await exportPreset(preset.id)
+                                const path = await exportPreset(preset.id)
+                                if (path) alert('已导出到：\n' + path)
                             } catch (e: any) {
                                 alert('导出失败：' + (e?.message || e))
                             }
@@ -214,7 +215,8 @@ export default function PresetEditPage() {
                     onClick={async () => {
                         try {
                             const { exportPreset } = await import('../services/backupService')
-                            await exportPreset(preset.id)
+                            const path = await exportPreset(preset.id)
+                            if (path) alert('已导出到：\n' + path)
                         } catch (e: any) {
                             alert('导出失败：' + (e?.message || e))
                         }

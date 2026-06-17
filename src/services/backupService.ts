@@ -1,8 +1,9 @@
 import { db } from '../db'
 import { uuid } from '../utils/id'
+import { isTauri } from '../utils/platform'
 import type {
     Character, Lorebook, LorebookEntry, Preset,
-    Chat, Message, Moment, MomentComment, SceneSummary, MomentSummary,
+    Chat, Message, Moment, MomentComment, SceneSummary, MomentSummary, WorldSummary,
 } from '../types'
 
 const FORMAT_VERSION = 1
@@ -21,14 +22,37 @@ function envelope(type: string, data: any): ExportEnvelope {
     return { app: 'boxworld', formatVersion: FORMAT_VERSION, type, exportedAt: Date.now(), data }
 }
 
-function download(filename: string, obj: any) {
-    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' })
+/**
+ * 保存 JSON 文件。
+ * - Tauri 桌面端：弹出原生「另存为」对话框，用户选择保存位置后写入文件，返回完整路径（取消返回 null）。
+ *   修复了 WebView2 里 `<a download>` blob-URL 静默失败 / 文件落到找不到的位置的问题。
+ * - 浏览器/移动端：沿用 `<a download>` 兜底，文件落到浏览器下载目录，返回文件名（无法拿到真实路径）。
+ */
+async function saveJson(filename: string, obj: any): Promise<string | null> {
+    const content = JSON.stringify(obj, null, 2)
+
+    if (isTauri()) {
+        const { save } = await import('@tauri-apps/plugin-dialog')
+        const { invoke } = await import('@tauri-apps/api/core')
+        // 弹原生保存对话框，默认文件名 + JSON 过滤器
+        const filePath = await save({
+            defaultPath: filename,
+            filters: [{ name: 'JSON', extensions: ['json'] }],
+        })
+        if (!filePath) return null // 用户取消
+        await invoke('write_text_file', { path: filePath, content })
+        return filePath
+    }
+
+    // 浏览器兜底：标准下载
+    const blob = new Blob([content], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = filename
     a.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
+    return filename
 }
 
 function dateStamp(): string {
@@ -63,21 +87,58 @@ export async function exportCharacterShare(characterId: string) {
         character: stripCharacterRuntime(character),
         lorebook: lorebookBundle,
     }
-    download(`boxworld-character-${safeName(character.name)}-share.json`, envelope('character_share', data))
+    return saveJson(`boxworld-character-${safeName(character.name)}-share.json`, envelope('character_share', data))
 }
 
-/** 导出单个角色 - 完整包：角色 + 世界书 + 聊天 + 朋友圈 + 摘要 */
+/**
+ * 导出整个"角色世界" - 完整包：主卡 + 该世界所有 NPC + 群聊 + 各自单聊/朋友圈 +
+ * 世界书 + 统一世界记忆 + 朋友圈摘要 + 场景摘要。
+ *
+ * 收集范围（按"单卡世界"语义）：
+ * - 角色：主 + 该世界的 NPC（isNpc && parentWorldId === 主卡 id）
+ * - 聊天：主卡单聊 + 世界群聊（worldId === 主卡 id）+ NPC 单聊（characterId ∈ NPC ids）
+ * - 朋友圈：作者 ∈ {主卡 + NPC} ∪ 用户在该世界发的 solo 朋友圈（soloWorldCharacterId === 主卡 id）
+ * - 评论：上述朋友圈的所有评论
+ * - 世界记忆：worldSummaries.worldId === 主卡 id
+ * - 朋友圈摘要：ownerId ∈ {主卡 + NPC}
+ * - 场景摘要：上述聊天各自的摘要
+ */
 export async function exportCharacterFull(characterId: string) {
-    const character = await db.characters.get(characterId)
-    if (!character) throw new Error('角色不存在')
+    const mainChar = await db.characters.get(characterId)
+    if (!mainChar) throw new Error('角色不存在')
 
+    // 1. 角色：主卡 + 该世界 NPC
+    const npcs = await db.characters
+        .where('parentWorldId').equals(characterId).toArray()
+    const allChars = [mainChar, ...npcs]
+    const charIds = new Set(allChars.map((c) => c.id))
+
+    // 2. 世界书（主卡绑定）
     let lorebookBundle = null
-    if (character.lorebookId) {
-        lorebookBundle = await collectLorebook(character.lorebookId)
+    if (mainChar.lorebookId) {
+        lorebookBundle = await collectLorebook(mainChar.lorebookId)
     }
 
-    const chats = await db.chats.where('characterId').equals(characterId).toArray()
+    // 3. 聊天：主卡单聊 + NPC 单聊 + 该世界群聊
+    const chatMap = new Map<string, Chat>()
+    // 3a. 单聊：按 characterId 遍历所有该世界角色
+    for (const cid of charIds) {
+        const cs = await db.chats.where('characterId').equals(cid).toArray()
+        for (const c of cs) {
+            // 排除可能误入的群聊（群聊 type=group，characterId 为空）
+            if (c.type === 'group') continue
+            chatMap.set(c.id, c)
+        }
+    }
+    // 3b. 世界群聊
+    const groupChats = await db.chats.where('worldId').equals(characterId).toArray()
+    for (const c of groupChats) {
+        chatMap.set(c.id, c)
+    }
+    const chats = Array.from(chatMap.values())
     const chatIds = chats.map((c) => c.id)
+
+    // 4. 消息 + 场景摘要
     let messages: Message[] = []
     let sceneSummaries: SceneSummary[] = []
     for (const cid of chatIds) {
@@ -86,37 +147,66 @@ export async function exportCharacterFull(characterId: string) {
         if (ss) sceneSummaries.push(ss)
     }
 
-    const moments = await db.moments.where('authorId').equals(characterId).toArray()
+    // 5. 朋友圈：作者 ∈ {主卡+NPC} ∪ 该世界 solo 朋友圈
+    const momentMap = new Map<string, Moment>()
+    for (const cid of charIds) {
+        const ms = await db.moments.where('authorId').equals(cid).toArray()
+        for (const m of ms) momentMap.set(m.id, m)
+    }
+    const soloMoments = await db.moments
+        .where('soloWorldCharacterId').equals(characterId).toArray()
+    for (const m of soloMoments) momentMap.set(m.id, m)
+    const moments = Array.from(momentMap.values())
     const momentIds = moments.map((m) => m.id)
+
+    // 6. 评论
     let comments: MomentComment[] = []
     for (const mid of momentIds) {
         comments = comments.concat(await db.momentComments.where('momentId').equals(mid).toArray())
     }
 
+    // 7. 世界记忆（每个世界一份，id = 主卡 id）
+    const worldSummary = await db.worldSummaries.where('worldId').equals(characterId).first() || null
+
+    // 8. 朋友圈摘要（各角色自己的）
+    let momentSummaries: MomentSummary[] = []
+    for (const cid of charIds) {
+        momentSummaries = momentSummaries.concat(
+            await db.momentSummaries.where('ownerId').equals(cid).toArray(),
+        )
+    }
+
     const data = {
-        character: stripCharacterRuntime(character),
+        // 主卡单独放（兼容旧导入），NPC 放 npcs 字段
+        character: stripCharacterRuntime(mainChar),
+        npcs: npcs.map(stripCharacterRuntime),
         lorebook: lorebookBundle,
         chats,
         messages,
         sceneSummaries,
         moments,
         comments,
+        worldSummary,
+        momentSummaries,
     }
-    download(`boxworld-character-${safeName(character.name)}-${dateStamp()}.json`, envelope('character_full', data))
+    return saveJson(
+        `boxworld-character-${safeName(mainChar.name)}-${dateStamp()}.json`,
+        envelope('character_full', data),
+    )
 }
 
 /** 导出单本世界书 */
 export async function exportLorebook(lorebookId: string) {
     const bundle = await collectLorebook(lorebookId)
     if (!bundle) throw new Error('世界书不存在')
-    download(`boxworld-lorebook-${safeName(bundle.lorebook.name)}.json`, envelope('lorebook', bundle))
+    return saveJson(`boxworld-lorebook-${safeName(bundle.lorebook.name)}.json`, envelope('lorebook', bundle))
 }
 
 /** 导出单个预设 */
 export async function exportPreset(presetId: string) {
     const preset = await db.presets.get(presetId)
     if (!preset) throw new Error('预设不存在')
-    download(`boxworld-preset-${safeName(preset.name)}.json`, envelope('preset', { preset }))
+    return saveJson(`boxworld-preset-${safeName(preset.name)}.json`, envelope('preset', { preset }))
 }
 
 /** 完整备份 */
@@ -146,7 +236,7 @@ export async function exportFullBackup(includeApiKeys: boolean) {
         presets: await db.presets.toArray(),
         settings: exportSettings,
     }
-    download(`boxworld-backup-${dateStamp()}.json`, envelope('full_backup', data))
+    return saveJson(`boxworld-backup-${dateStamp()}.json`, envelope('full_backup', data))
 }
 
 /** 去掉角色的运行时状态（导出时重置） */
@@ -237,43 +327,114 @@ async function importCharacterShare(data: any): Promise<ImportResult> {
     return { ok: true, type: 'character_share', message: `已导入角色「${newChar.name}」（精简包）` }
 }
 
+/**
+ * 导入"角色世界"完整包。
+ *
+ * 兼容老格式（无 npcs/worldSummary/momentSummaries 字段）——新字段一律用 `|| [] / null` 兜底。
+ *
+ * 重映射策略：所有角色 id（主卡 + NPC）整体换新，然后 chat/moment/comment/worldSummary/
+ * momentSummary/memberIds/groupIds/senderId/soloWorldCharacterId/scannedSeq 等引用全部跟着映射。
+ * 'user' 作为作者/群 ID key 时保留不变（全局用户，无 id 可换）。
+ */
 async function importCharacterFull(data: any): Promise<ImportResult> {
-    const c: Character = data.character
-    if (!c) return { ok: false, message: '数据缺少角色信息' }
+    const mainChar: Character = data.character
+    if (!mainChar) return { ok: false, message: '数据缺少角色信息' }
+    const oldMainId = mainChar.id
 
+    // ---------- 1. 世界书 ----------
     const newLorebookId = await importLorebookBundle(data.lorebook)
 
+    // ---------- 2. 角色（主卡 + NPC），建 charIdMap ----------
+    const charIdMap = new Map<string, string>() // 旧角色 id → 新角色 id
     const now = Date.now()
-    const newCharId = uuid()
+
+    const newMainId = uuid()
+    charIdMap.set(oldMainId, newMainId)
     await db.characters.add({
-        ...c,
-        id: newCharId,
+        ...mainChar,
+        id: newMainId,
         lorebookId: newLorebookId,
-        muted: c.muted ?? false,
+        muted: mainChar.muted ?? false,
         lastTickAt: 0,
         createdAt: now,
         updatedAt: now,
     })
 
-    // chats + messages（重映射 chatId）
+    // NPC：老格式没有 npcs 字段时为空数组
+    for (const npc of (data.npcs as Character[]) || []) {
+        const newNpcId = uuid()
+        charIdMap.set(npc.id, newNpcId)
+        await db.characters.add({
+            ...npc,
+            id: newNpcId,
+            parentWorldId: newMainId, // 归属到新主卡
+            lorebookId: npc.lorebookId === mainChar.lorebookId
+                ? newLorebookId  // 跟主卡共用同一本世界书时一起换；独立的世界书（极少见）旧 id 保留作废
+                : npc.lorebookId,
+            muted: npc.muted ?? false,
+            lastTickAt: 0,
+            createdAt: now,
+            updatedAt: now,
+        })
+    }
+
+    /** 把引用到的旧角色 id 换成新 id；'user' 等非映射值原样返回 */
+    const remapChar = (oldId: string | undefined): string | undefined => {
+        if (!oldId) return oldId
+        if (oldId === 'user') return 'user'
+        return charIdMap.get(oldId) || oldId // 映射不到（理论上不该发生）保留原值避免丢数据
+    }
+
+    // ---------- 3. 聊天（单聊 characterId / 群聊 memberIds+worldId+groupIds） ----------
     const chatIdMap = new Map<string, string>()
     for (const chat of (data.chats as Chat[]) || []) {
-        const newId = uuid()
-        chatIdMap.set(chat.id, newId)
-        await db.chats.add({ ...chat, id: newId, characterId: newCharId })
+        const newChatId = uuid()
+        chatIdMap.set(chat.id, newChatId)
+
+        if (chat.type === 'group') {
+            // 群聊：重映射 worldId / memberIds / groupIds 的键
+            const newGroupIds: Record<string, string> = {}
+            for (const [k, v] of Object.entries(chat.groupIds || {})) {
+                newGroupIds[remapChar(k) as string] = v
+            }
+            await db.chats.add({
+                ...chat,
+                id: newChatId,
+                characterId: '', // 群聊无单聊对方
+                worldId: chat.worldId ? newMainId : chat.worldId,
+                memberIds: (chat.memberIds || []).map(remapChar).filter(Boolean) as string[],
+                groupIds: newGroupIds,
+            })
+        } else {
+            // 单聊：characterId 重映射
+            await db.chats.add({
+                ...chat,
+                id: newChatId,
+                characterId: remapChar(chat.characterId) || newMainId,
+            })
+        }
     }
+
+    // ---------- 4. 消息（chatId / senderId） ----------
     for (const m of (data.messages as Message[]) || []) {
         const newChatId = chatIdMap.get(m.chatId)
         if (!newChatId) continue
-        await db.messages.add({ ...m, id: uuid(), chatId: newChatId })
+        await db.messages.add({
+            ...m,
+            id: uuid(),
+            chatId: newChatId,
+            senderId: remapChar(m.senderId),
+        })
     }
+
+    // ---------- 5. 场景摘要（chatId） ----------
     for (const ss of (data.sceneSummaries as SceneSummary[]) || []) {
         const newChatId = chatIdMap.get(ss.chatId)
         if (!newChatId) continue
         await db.sceneSummaries.add({ ...ss, id: newChatId, chatId: newChatId })
     }
 
-    // moments + comments（重映射 momentId，authorId 改成新角色）
+    // ---------- 6. 朋友圈（authorId / soloWorldCharacterId） ----------
     const momentIdMap = new Map<string, string>()
     for (const mo of (data.moments as Moment[]) || []) {
         const newId = uuid()
@@ -281,20 +442,67 @@ async function importCharacterFull(data: any): Promise<ImportResult> {
         await db.moments.add({
             ...mo,
             id: newId,
-            authorId: newCharId,
+            authorId: remapChar(mo.authorId) || 'user',
+            soloWorldCharacterId: mo.soloWorldCharacterId ? newMainId : mo.soloWorldCharacterId,
             imageDescriptions: mo.imageDescriptions || [],
             imageAnalyzed: mo.imageAnalyzed ?? true,
         })
     }
-    for (const cm of (data.comments as MomentComment[]) || []) {
+
+    // ---------- 7. 评论（momentId / authorId / replyToId） ----------
+    // 评论 id 也需要映射（replyToId 引用同批评论）
+    const commentIdMap = new Map<string, string>()
+    const pendingComments: MomentComment[] = (data.comments as MomentComment[]) || []
+    // 先分配新 id 并写入，replyToId 二次修正（因为依赖同批其他评论的新 id）
+    for (const cm of pendingComments) {
+        const newCmId = uuid()
+        commentIdMap.set(cm.id, newCmId)
         const newMomentId = momentIdMap.get(cm.momentId)
-        if (!newMomentId) continue
-        // 评论作者：如果是原角色 id 则改成新角色 id；user 保持
-        const newAuthorId = cm.authorId === c.id ? newCharId : cm.authorId
-        await db.momentComments.add({ ...cm, id: uuid(), momentId: newMomentId, authorId: newAuthorId })
+        if (!newMomentId) continue // 朋友圈不在本包里（不该发生），跳过避免悬空
+        await db.momentComments.add({
+            ...cm,
+            id: newCmId,
+            momentId: newMomentId,
+            authorId: remapChar(cm.authorId) || 'user',
+            replyToId: cm.replyToId, // 临时旧值，下一步修正
+        })
+    }
+    // 修正 replyToId
+    for (const cm of pendingComments) {
+        if (!cm.replyToId) continue
+        const newCmId = commentIdMap.get(cm.id)
+        const newReplyTo = commentIdMap.get(cm.replyToId)
+        if (newCmId && newReplyTo) {
+            await db.momentComments.update(newCmId, { replyToId: newReplyTo })
+        }
     }
 
-    return { ok: true, type: 'character_full', message: `已导入角色「${c.name}」（完整包，含聊天与朋友圈）` }
+    // ---------- 8. 世界记忆（id / worldId / scannedSeq 键） ----------
+    if (data.worldSummary) {
+        const ws: WorldSummary = data.worldSummary
+        const newScannedSeq: Record<string, number> = {}
+        for (const [k, v] of Object.entries(ws.scannedSeq || {})) {
+            const mapped = remapChar(k)
+            if (mapped) newScannedSeq[mapped] = v as number
+        }
+        await db.worldSummaries.add({
+            ...ws,
+            id: newMainId,
+            worldId: newMainId,
+            scannedSeq: newScannedSeq,
+        })
+    }
+
+    // ---------- 9. 朋友圈摘要（ownerId） ----------
+    for (const ms of (data.momentSummaries as MomentSummary[]) || []) {
+        await db.momentSummaries.add({
+            ...ms,
+            id: uuid(),
+            ownerId: remapChar(ms.ownerId) || newMainId,
+        })
+    }
+
+    return { ok: true, type: 'character_full', message: `已导入角色世界「${mainChar.name}」（完整包：主卡 + ${(data.npcs as Character[])?.length || 0} 个 NPC + 聊天/朋友圈/群聊/记忆）` }
 }
 
 async function importLorebook(data: any): Promise<ImportResult> {

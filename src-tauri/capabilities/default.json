@@ -8,6 +8,7 @@
   "permissions": [
     "core:default",
     "http:default",
+    "dialog:allow-save",
     {
       "identifier": "http:default",
       "allow": [

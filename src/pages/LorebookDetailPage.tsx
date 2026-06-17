@@ -94,7 +94,8 @@ export default function LorebookDetailPage() {
                     onClick={async () => {
                         try {
                             const { exportLorebook } = await import('../services/backupService')
-                            await exportLorebook(book.id)
+                            const path = await exportLorebook(book.id)
+                            if (path) alert('已导出到：\n' + path)
                         } catch (e: any) {
                             alert('导出失败：' + (e?.message || e))
                         }
@@ -104,10 +105,6 @@ export default function LorebookDetailPage() {
                 >
                     <Share2 size={18} />
                 </button>
-                <button onClick={handleRename} className="p-2" title="改名">
-                    <Pencil size={18} />
-                </button>
-
                 <button onClick={handleRename} className="p-2" title="改名">
                     <Pencil size={18} />
                 </button>

@@ -1157,8 +1157,9 @@ function DataManageRows() {
     setBusy(true)
     try {
       const { exportFullBackup } = await import('../services/backupService')
-      await exportFullBackup(includeApiKeys)
-      setMsg('已导出完整备份')
+      const path = await exportFullBackup(includeApiKeys)
+      if (path) setMsg('已导出到：' + path)
+      else setMsg('已取消')
     } catch (e: any) {
       setMsg('导出失败：' + (e?.message || e))
     } finally {

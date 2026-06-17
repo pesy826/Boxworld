@@ -15,6 +15,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-http": "^2.5.9",
     "dexie": "^4.4.3",
     "lucide-react": "^1.17.0",

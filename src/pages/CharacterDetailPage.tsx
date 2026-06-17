@@ -422,8 +422,10 @@ function ExportMenu({ characterId }: { characterId: string }) {
     setBusy(true)
     try {
       const svc = await import('../services/backupService')
-      if (kind === 'share') await svc.exportCharacterShare(characterId)
-      else await svc.exportCharacterFull(characterId)
+      const path = kind === 'share'
+        ? await svc.exportCharacterShare(characterId)
+        : await svc.exportCharacterFull(characterId)
+      if (path) alert('已导出到：\n' + path)
     } catch (e: any) {
       alert('导出失败：' + (e?.message || e))
     } finally {
@@ -445,7 +447,7 @@ function ExportMenu({ characterId }: { characterId: string }) {
               导出（分享用·精简）
             </button>
             <button onClick={() => doExport('full')} className="w-full text-left px-3 py-2 hover:bg-wechat-bg">
-              导出（完整·含记录）
+              导出（完整·整个世界：NPC/群聊/记忆）
             </button>
           </div>
         </>
