@@ -23,6 +23,10 @@ interface ChatStore {
     renameGroup: (chatId: string, name: string) => Promise<void>
     /** 设置群内某成员的群 ID（memberKey = 角色 id 或 'user'） */
     setGroupMemberId: (chatId: string, memberKey: string, groupId: string) => Promise<void>
+    /** 设置自定义聊天背景（dataUrl = 压缩后的图片；单聊/群聊通用） */
+    setChatBackground: (chatId: string, dataUrl: string) => Promise<void>
+    /** 清除自定义聊天背景，恢复默认 */
+    clearChatBackground: (chatId: string) => Promise<void>
 
     appendUserMessage: (chatId: string, content: string) => Promise<Message>
     /** 用户发表情（content = 表情描述名） */
@@ -47,6 +51,8 @@ interface ChatStore {
     ) => Promise<Message>
 
     updateMessageContent: (messageId: string, content: string) => Promise<void>
+    /** 给某条文字消息挂上「转语音」生成的语音条（音频 dataURL + 时长秒） */
+    setMessageVoice: (messageId: string, voiceData: string, voiceDuration: number) => Promise<void>
     deleteMessage: (chatId: string, messageId: string) => Promise<void>
     deleteBatch: (chatId: string, batchId: string) => Promise<void>
     deleteFromMessage: (chatId: string, messageId: string) => Promise<void>
@@ -148,6 +154,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (trimmed) nextIds[memberKey] = trimmed
         else delete nextIds[memberKey]
         const next = { ...chat, groupIds: nextIds }
+        await db.chats.put(next)
+        set((s) => ({ chats: s.chats.map((c) => c.id === chatId ? next : c) }))
+    },
+
+    setChatBackground: async (chatId, dataUrl) => {
+        const chat = get().chats.find((c) => c.id === chatId)
+        if (!chat) return
+        const next = { ...chat, background: dataUrl }
+        await db.chats.put(next)
+        set((s) => ({ chats: s.chats.map((c) => c.id === chatId ? next : c) }))
+    },
+
+    clearChatBackground: async (chatId) => {
+        const chat = get().chats.find((c) => c.id === chatId)
+        if (!chat) return
+        const next = { ...chat }
+        delete next.background
         await db.chats.put(next)
         set((s) => ({ chats: s.chats.map((c) => c.id === chatId ? next : c) }))
     },
@@ -285,6 +308,21 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         const target = await db.messages.get(messageId)
         if (!target) return
         const updated = { ...target, content }
+        await db.messages.put(updated)
+        set((s) => ({
+            messagesByChat: {
+                ...s.messagesByChat,
+                [target.chatId]: (s.messagesByChat[target.chatId] || []).map(
+                    (m) => m.id === messageId ? updated : m,
+                ),
+            },
+        }))
+    },
+
+    setMessageVoice: async (messageId, voiceData, voiceDuration) => {
+        const target = await db.messages.get(messageId)
+        if (!target) return
+        const updated = { ...target, voiceData, voiceDuration }
         await db.messages.put(updated)
         set((s) => ({
             messagesByChat: {

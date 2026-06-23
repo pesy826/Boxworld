@@ -1,8 +1,10 @@
+import { useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Plus, Sparkles, MessageCircle, RefreshCw, Wrench, CheckCircle2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Sparkles, MessageCircle, RefreshCw, Wrench, CheckCircle2, Upload } from 'lucide-react'
 import { usePresetStore } from '../stores/presetStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import type { UtilityType } from '../types'
+import { convertSillyTavernPreset, looksLikeSillyTavernPreset } from '../services/stPresetImport'
 
 const UTILITY_TYPE_LABELS: Record<UtilityType, string> = {
   screening: '粗筛',
@@ -33,6 +35,7 @@ export default function PresetsPage() {
   const navigate = useNavigate()
   const presets = usePresetStore((s) => s.presets)
   const create = usePresetStore((s) => s.create)
+  const updateSlots = usePresetStore((s) => s.updateSlots)
   const resetBuiltins = usePresetStore((s) => s.resetBuiltins)
   const settings = useSettingsStore((s) => s.settings)
   const setActive = useSettingsStore((s) => s.setActiveUtilityPreset)
@@ -53,6 +56,28 @@ export default function PresetsPage() {
     if (!name?.trim()) return
     const p = await create('utility', name.trim(), undefined, type)
     navigate(`/preset/${p.id}`)
+  }
+
+  const handleImportST = async (file: File, mode: 'im' | 'scene') => {
+    try {
+      const json = JSON.parse(await file.text())
+      if (!looksLikeSillyTavernPreset(json)) {
+        alert('导入失败：这不是有效的酒馆 Chat Completion 预设（缺少 prompts 字段）')
+        return
+      }
+      const { name, slots } = convertSillyTavernPreset(json)
+      if (slots.length === 0) {
+        alert('导入失败：未解析到任何提示词块')
+        return
+      }
+      const label = `${name}（${mode === 'scene' ? '场景' : '微信'}）`
+      const p = await create(mode, label)
+      await updateSlots(p.id, slots)
+      alert(`已导入酒馆预设：${label}\n共 ${slots.length} 个槽位，${slots.filter((s) => s.enabled).length} 个启用。\n可点击进入查看并按需调整。`)
+      navigate(`/preset/${p.id}`)
+    } catch {
+      alert('导入失败：请确认选择的是有效的酒馆预设 JSON 文件')
+    }
   }
 
   const handleResetBuiltins = async () => {
@@ -78,6 +103,7 @@ export default function PresetsPage() {
         icon={<MessageCircle size={16} className="text-wechat-green" />}
         presets={imPresets}
         onCreate={() => handleCreate('im')}
+        onImport={(file) => handleImportST(file, 'im')}
         onOpen={(id) => navigate(`/preset/${id}`)}
       />
 
@@ -86,6 +112,7 @@ export default function PresetsPage() {
         icon={<Sparkles size={16} className="text-purple-500" />}
         presets={scenePresets}
         onCreate={() => handleCreate('scene')}
+        onImport={(file) => handleImportST(file, 'scene')}
         onOpen={(id) => navigate(`/preset/${id}`)}
       />
 
@@ -152,19 +179,44 @@ export default function PresetsPage() {
 }
 
 function PresetGroup({
-  title, icon, presets, onCreate, onOpen,
+  title, icon, presets, onCreate, onImport, onOpen,
 }: {
   title: string
   icon: React.ReactNode
   presets: ReturnType<typeof usePresetStore.getState>['presets']
   onCreate: () => void
+  onImport?: (file: File) => void
   onOpen: (id: string) => void
 }) {
+  const fileRef = useRef<HTMLInputElement>(null)
   return (
     <div className="mt-3">
       <div className="px-4 py-2 text-[12px] text-wechat-textGray flex items-center gap-1">
         {icon}{title}
+        {onImport && (
+          <button
+            onClick={() => fileRef.current?.click()}
+            className="ml-auto flex items-center gap-1 text-wechat-green"
+            title="导入酒馆（SillyTavern）预设"
+          >
+            <Upload size={13} />
+            导入酒馆预设
+          </button>
+        )}
       </div>
+      {onImport && (
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".json,application/json"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) onImport(f)
+            e.currentTarget.value = ''
+          }}
+        />
+      )}
       <div className="bg-white">
         {presets.map((p) => (
           <button

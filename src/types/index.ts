@@ -42,6 +42,12 @@ export interface Character {
   /** 角色的私有世界记忆（深思时同步进来的"我该知道但上下文没有"的事件） */
   privateMemory: string
   /**
+   * 角色专属「常用表情」：key=情绪槽位名（开心/撒娇/难过/.../随意），value=该槽位下的表情图片(base64)数组。
+   * "随意"槽=不好界定使用场景的百搭表情，任何情绪场景都可点缀。
+   * 角色发表情时优先（约 6 成概率）从自己的专属表情里按当下情绪挑，其余从通用表情库挑。
+   */
+  customStickers?: Record<string, string[]>
+  /**
    * 我对其他角色的印象/了解（第一人称）。
    * key = 对方角色 id；value = 一句或几句话的印象（如"李四：用户的同事，话不多"）。
    * 全局唯一、不分群（在任何群里对同一个人都用这一份）。
@@ -52,6 +58,12 @@ export interface Character {
   updatedAt: number
 }
 
+
+/**
+ * 角色专属常用表情的预设情绪槽位。最后一个"随意"=不限场景的百搭表情。
+ * 用户也可在此基础上自定义新增槽位名。
+ */
+export const CUSTOM_STICKER_SLOTS = ['开心', '大笑', '撒娇', '害羞', '难过', '生气', '无语', '调侃', '惊讶', '随意'] as const
 
 // ============ 会话 ============
 export type ChatType = 'single' | 'group'
@@ -82,6 +94,9 @@ export interface Chat {
    * 角色可在群聊中因关系变化主动改自己的（很有生活感）。
    */
   groupIds?: Record<string, string>
+
+  /** 自定义聊天背景图片（压缩后的 base64 dataURL）；空 = 默认背景。单聊/群聊通用 */
+  background?: string
 }
 
 // ============ 消息 ============
@@ -110,6 +125,10 @@ export interface Message {
   senderId?: string
   /** type=image 时的图片 dataURL（content 存图片的中文描述） */
   imageData?: string
+  /** 文字消息「转语音」后挂在气泡下方的语音条：音频 dataURL（原文本照常显示） */
+  voiceData?: string
+  /** 语音条时长（秒，向上取整用于显示 N″） */
+  voiceDuration?: number
 }
 
 // ============ 朋友圈 ============
@@ -355,6 +374,46 @@ export interface ComfyConfig {
   promptGenEnabled?: boolean
 }
 
+// ============ NAI 生图（NovelAI Image Generation） ============
+/**
+ * NovelAI 官方图像生成配置。与 ComfyUI 平级的另一个出图后端。
+ * 调用 NovelAI 的 /ai/generate-image 接口（返回 zip，内含 PNG），用 API Key 鉴权。
+ * 跨域：桌面端走 Tauri http 插件最稳；浏览器/移动端需中转。
+ */
+export interface NaiConfig {
+  /** 是否启用 */
+  enabled: boolean
+  /** NovelAI API Key（持久 token） */
+  apiKey: string
+  /** 接口地址（默认 https://image.novelai.net），可填中转 */
+  baseUrl: string
+  /** 模型，如 nai-diffusion-4-5-full / nai-diffusion-3 */
+  model: string
+  width: number
+  height: number
+  /** 采样步数 */
+  steps: number
+  /** 提示词引导强度（cfg scale） */
+  scale: number
+  /** 采样器，如 k_euler_ancestral / k_dpmpp_2m */
+  sampler: string
+  /** 负面提示词（undesired content） */
+  negativePrompt: string
+  /** 正面提示词固定前缀（拼在 AI 提示词前，如画风 tag） */
+  positivePrefix: string
+  /** 正面提示词固定后缀 */
+  positiveSuffix: string
+  /** 出图超时（秒） */
+  timeoutSec: number
+  /**
+   * 是否在出图前用辅助模型把中文描述改写成规范英文提示词（复用 image_prompt_gen 预设）。
+   */
+  promptGenEnabled?: boolean
+}
+
+/** 角色发图用哪个后端：comfy=本地 ComfyUI（仅桌面端）；nai=NovelAI 官方（不限平台） */
+export type ImageBackend = 'comfy' | 'nai'
+
 // ============ 语音通话 ============
 /** 语音端点来源：primary=主模型端点、utility=辅助端点、custom=下方独立端点 */
 export type VoiceEndpointSource = 'primary' | 'utility' | 'custom'
@@ -474,6 +533,12 @@ export interface Settings {
   defaultScenePresetId?: string
   /** ComfyUI 文生图配置（仅桌面端生效；旧数据可能没有此字段） */
   comfyConfig?: ComfyConfig
+  /** NAI（NovelAI）生图配置（旧数据可能没有此字段） */
+  naiConfig?: NaiConfig
+  /** 角色发图用哪个后端（旧数据无此字段视为 comfy） */
+  imageBackend?: ImageBackend
+  /** 界面主题（旧数据无此字段视为 system 跟随系统） */
+  theme?: 'light' | 'dark' | 'system'
   /** 群聊扮演模式（旧数据无此字段视为 coarse 粗略） */
   groupChatMode?: GroupChatMode
   /** 群聊精细模式单次最多跑多少轮（默认 6）。轮数越多角色之间越能自己聊起来，但 API 开销越大 */

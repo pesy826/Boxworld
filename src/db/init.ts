@@ -1,5 +1,5 @@
 import { db } from './index'
-import { createDefaultSettings, createDefaultComfyConfig, createDefaultVoiceConfig } from './defaults'
+import { createDefaultSettings, createDefaultComfyConfig, createDefaultVoiceConfig, createDefaultNaiConfig } from './defaults'
 import { getBuiltinPresets } from './builtinPresets'
 
 export async function initDatabase() {
@@ -51,6 +51,9 @@ export async function initDatabase() {
       utilityPresetMap: { ...defaults.utilityPresetMap, ...utilityPresetMap },
       activeSoloCharacterId: (existing as any).activeSoloCharacterId,
       comfyConfig: { ...createDefaultComfyConfig(), ...(existing as any).comfyConfig },
+      naiConfig: { ...createDefaultNaiConfig(), ...(existing as any).naiConfig },
+      imageBackend: (existing as any).imageBackend || 'comfy',
+      theme: (existing as any).theme || 'system',
       voiceConfig: { ...createDefaultVoiceConfig(), ...(existing as any).voiceConfig },
       promptTemplates: undefined,
     } as any)

@@ -68,7 +68,14 @@ export function getComfyConfig(): ComfyConfig {
 export async function generateImagePrompt(chineseDesc: string): Promise<string> {
   const cfg = getComfyConfig()
   if (!cfg.promptGenEnabled) return chineseDesc
+  return runImagePromptRewrite(chineseDesc)
+}
 
+/**
+ * 实际的提示词改写逻辑（不判断任何后端的开关）。
+ * 供 comfy / nai 两个后端共用——开关判断在各自调用方做。
+ */
+export async function runImagePromptRewrite(chineseDesc: string): Promise<string> {
   const settings = useSettingsStore.getState().settings
   if (!settings) return chineseDesc
   // 优先辅助模型，没配回退主模型

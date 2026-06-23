@@ -24,6 +24,11 @@ async function bootstrap() {
   await initDatabase()
   await timeService.init()
   await useSettingsStore.getState().load()
+  // 应用界面主题（黑夜模式）
+  {
+    const { applyTheme } = await import('./utils/theme')
+    applyTheme(useSettingsStore.getState().settings?.theme)
+  }
   await useCharacterStore.getState().load()
   await useLorebookStore.getState().load()
   await usePresetStore.getState().load()

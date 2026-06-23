@@ -6,7 +6,8 @@ import { ChevronLeft, Loader2, RefreshCw } from 'lucide-react'
 import { useSettingsStore } from '../stores/settingsStore'
 import { testApiConnection, fetchModelList, transcribeAudio, synthesizeSpeech } from '../services/apiService'
 import { testComfyConnection, fetchComfyCheckpoints, fetchComfyUnetModels, fetchComfySamplers, generateComfyImage } from '../services/comfyService'
-import { createDefaultComfyConfig, createDefaultVoiceConfig } from '../db/defaults'
+import { testNaiGenerate } from '../services/naiService'
+import { createDefaultComfyConfig, createDefaultVoiceConfig, createDefaultNaiConfig } from '../db/defaults'
 import { isDesktop } from '../utils/platform'
 import { SettingRow, SettingSection } from '../components/SettingRow'
 import { SafeInput } from '../components/SafeInput'
@@ -235,11 +236,15 @@ export default function SettingsPage() {
       </SettingSection>
       </div>
 
+      <AppearanceSection />
+
       <GroupChatModeSection />
 
       <VoiceSection />
 
+      <ImageBackendSection />
       {isDesktop() && <ComfySection />}
+      <NaiSection />
 
       <SettingSection title={'我的人设（角色眼中的"你"）'}>
         <UserAvatarRow />
@@ -1287,5 +1292,229 @@ function DataManageRows() {
         </div>
       )}
     </>
+  )
+}
+
+/** 外观（深色模式）设置 */
+function AppearanceSection() {
+  const settings = useSettingsStore((s) => s.settings)
+  const setTheme = useSettingsStore((s) => s.setTheme)
+  if (!settings) return null
+  const theme = settings.theme || 'system'
+  return (
+    <SettingSection title="外观">
+      <div className="px-4 pt-2 pb-1 text-[11px] text-wechat-textGray">
+        深色模式。选「跟随系统」会根据你的设备主题自动切换。
+      </div>
+      <SettingRow label="主题">
+        <select
+          className="text-[14px] bg-transparent outline-none"
+          value={theme}
+          onChange={(e) => setTheme(e.target.value as 'light' | 'dark' | 'system')}
+        >
+          <option value="system">跟随系统</option>
+          <option value="light">浅色</option>
+          <option value="dark">深色</option>
+        </select>
+      </SettingRow>
+    </SettingSection>
+  )
+}
+
+/** 角色发图后端切换（ComfyUI / NAI） */
+function ImageBackendSection() {
+  const settings = useSettingsStore((s) => s.settings)
+  const setImageBackend = useSettingsStore((s) => s.setImageBackend)
+  if (!settings) return null
+  const backend = settings.imageBackend || 'comfy'
+  return (
+    <SettingSection title="角色发图（文生图）">
+      <div className="px-4 pt-2 pb-1 text-[11px] text-wechat-textGray">
+        角色在聊天/朋友圈里发图用哪个后端。ComfyUI 仅电脑端可用（连本地服务）；NovelAI 不限平台（用官方 API Key）。在下方对应区块里配置并启用所选后端。
+      </div>
+      <SettingRow label="生图后端">
+        <select
+          className="text-[14px] bg-transparent outline-none"
+          value={backend}
+          onChange={(e) => setImageBackend(e.target.value as 'comfy' | 'nai')}
+        >
+          <option value="comfy">ComfyUI（仅电脑端）</option>
+          <option value="nai">NovelAI（不限平台）</option>
+        </select>
+      </SettingRow>
+    </SettingSection>
+  )
+}
+
+/** NovelAI 生图配置 */
+function NaiSection() {
+  const settings = useSettingsStore((s) => s.settings)
+  const updateNaiConfig = useSettingsStore((s) => s.updateNaiConfig)
+
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [genTesting, setGenTesting] = useState(false)
+  const [genResult, setGenResult] = useState<{ ok: boolean; text: string; image?: string } | null>(null)
+
+  if (!settings) return null
+  const cfg = settings.naiConfig || createDefaultNaiConfig()
+  const inputCls = 'w-full text-[14px] text-right outline-none bg-transparent placeholder:text-wechat-textGray'
+
+  const handleGenTest = async () => {
+    setGenTesting(true); setGenResult(null)
+    const r = await testNaiGenerate()
+    setGenTesting(false)
+    setGenResult(r.ok ? { ok: true, text: '✓ 出图成功', image: r.image } : { ok: false, text: `✗ ${r.error}` })
+  }
+
+  return (
+    <SettingSection title="NovelAI 文生图">
+      <div className="px-4 pt-2 pb-1 text-[11px] text-wechat-textGray">
+        用 NovelAI 官方图像 API 给角色配图（需 NovelAI 订阅的 API Key）。把上方「生图后端」选成 NovelAI 才会生效。电脑端走内置代理无跨域问题；浏览器/手机端需中转支持跨域。
+      </div>
+      <SettingRow label="启用">
+        <input
+          type="checkbox"
+          checked={cfg.enabled}
+          onChange={(e) => updateNaiConfig({ enabled: e.target.checked })}
+          className="w-5 h-5 accent-wechat-green"
+        />
+      </SettingRow>
+      <SettingRow label="API Key">
+        <SafeInput
+          className={inputCls}
+          type="password"
+          value={cfg.apiKey}
+          placeholder="pst-..."
+          onChange={(v) => updateNaiConfig({ apiKey: v })}
+        />
+      </SettingRow>
+      <SettingRow label="服务地址">
+        <SafeInput
+          className={inputCls}
+          value={cfg.baseUrl}
+          placeholder="https://image.novelai.net"
+          onChange={(v) => updateNaiConfig({ baseUrl: v })}
+        />
+      </SettingRow>
+      <SettingRow label="模型" hint="如 nai-diffusion-4-5-full / nai-diffusion-3">
+        <SafeInput
+          className={inputCls}
+          value={cfg.model}
+          placeholder="nai-diffusion-4-5-full"
+          onChange={(v) => updateNaiConfig({ model: v })}
+        />
+      </SettingRow>
+      <SettingRow label="画风前缀" hint="拼在 AI 提示词前的固定 tag">
+        <SafeInput
+          className={inputCls}
+          value={cfg.positivePrefix}
+          placeholder="可留空"
+          onChange={(v) => updateNaiConfig({ positivePrefix: v })}
+        />
+      </SettingRow>
+      <SettingRow label="画风后缀" hint="拼在 AI 提示词后的固定 tag">
+        <SafeInput
+          className={inputCls}
+          value={cfg.positiveSuffix}
+          placeholder="可留空"
+          onChange={(v) => updateNaiConfig({ positiveSuffix: v })}
+        />
+      </SettingRow>
+      <SettingRow label="辅助模型改写提示词" hint="出图前用辅助模型把中文描述转成规范英文提示词；可在「预设 → 文生图提示词改写」里定制">
+        <input
+          type="checkbox"
+          checked={!!cfg.promptGenEnabled}
+          onChange={(e) => updateNaiConfig({ promptGenEnabled: e.target.checked })}
+          className="w-5 h-5 accent-wechat-green"
+        />
+      </SettingRow>
+
+      <button
+        onClick={() => setShowAdvanced(!showAdvanced)}
+        className="w-full px-4 py-3 text-[14px] text-wechat-textGray text-left hover:bg-wechat-bg"
+      >
+        {showAdvanced ? '▼ 高级参数' : '▶ 高级参数'}
+      </button>
+
+      {showAdvanced && (
+        <>
+          <SettingRow label="宽度">
+            <input
+              className="w-full text-[14px] text-right outline-none bg-transparent"
+              type="number" step="64" min="256"
+              value={cfg.width}
+              onChange={(e) => updateNaiConfig({ width: parseInt(e.target.value) || 832 })}
+            />
+          </SettingRow>
+          <SettingRow label="高度">
+            <input
+              className="w-full text-[14px] text-right outline-none bg-transparent"
+              type="number" step="64" min="256"
+              value={cfg.height}
+              onChange={(e) => updateNaiConfig({ height: parseInt(e.target.value) || 1216 })}
+            />
+          </SettingRow>
+          <SettingRow label="步数 (steps)">
+            <input
+              className="w-full text-[14px] text-right outline-none bg-transparent"
+              type="number" step="1" min="1" max="50"
+              value={cfg.steps}
+              onChange={(e) => updateNaiConfig({ steps: parseInt(e.target.value) || 28 })}
+            />
+          </SettingRow>
+          <SettingRow label="引导强度 (scale)">
+            <input
+              className="w-full text-[14px] text-right outline-none bg-transparent"
+              type="number" step="0.5" min="1" max="30"
+              value={cfg.scale}
+              onChange={(e) => updateNaiConfig({ scale: parseFloat(e.target.value) || 5 })}
+            />
+          </SettingRow>
+          <SettingRow label="采样器" hint="如 k_euler_ancestral / k_dpmpp_2m">
+            <SafeInput
+              className={inputCls}
+              value={cfg.sampler}
+              placeholder="k_euler_ancestral"
+              onChange={(v) => updateNaiConfig({ sampler: v })}
+            />
+          </SettingRow>
+          <SettingRow label="出图超时（秒）">
+            <input
+              className="w-full text-[14px] text-right outline-none bg-transparent"
+              type="number" step="30" min="30"
+              value={cfg.timeoutSec}
+              onChange={(e) => updateNaiConfig({ timeoutSec: parseInt(e.target.value) || 120 })}
+            />
+          </SettingRow>
+          <div className="px-4 py-2">
+            <div className="text-[13px] mb-1">负面提示词</div>
+            <textarea
+              className="w-full text-[13px] border border-wechat-divider rounded p-2 outline-none resize-y min-h-[60px] bg-transparent"
+              value={cfg.negativePrompt}
+              onChange={(e) => updateNaiConfig({ negativePrompt: e.target.value })}
+            />
+          </div>
+        </>
+      )}
+
+      <div className="px-4 py-2">
+        <button
+          onClick={handleGenTest}
+          disabled={genTesting || !cfg.enabled}
+          className="w-full py-2 bg-wechat-green text-white rounded text-[13px] disabled:opacity-40 flex items-center justify-center gap-2"
+        >
+          {genTesting && <Loader2 size={14} className="animate-spin" />}
+          {genTesting ? '出图中...' : '测试出图'}
+        </button>
+      </div>
+      {genResult && (
+        <div className={`mx-4 mb-2 text-[12px] px-2 py-1.5 rounded ${genResult.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+          <div>{genResult.text}</div>
+          {genResult.image && (
+            <img src={genResult.image} alt="测试出图" className="mt-2 max-w-[200px] rounded" />
+          )}
+        </div>
+      )}
+    </SettingSection>
   )
 }

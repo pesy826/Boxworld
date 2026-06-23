@@ -5,7 +5,8 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useCharacterStore } from '../stores/characterStore'
 import { getActiveUtilityPrompt } from './utilityPrompts'
 import { buildStickerListText, buildChatImageHint } from './promptBuilder'
-import { generateComfyImage, generateImagePrompt, isComfyAvailable } from './comfyService'
+import { buildCustomStickerText } from './customStickers'
+import { generateImage, refineImagePrompt, isImageGenAvailable } from './imageGenService'
 import { timeService } from './timeService'
 import { useSceneSummaryStore } from '../stores/sceneSummaryStore'
 import { uuid } from '../utils/id'
@@ -145,6 +146,9 @@ async function buildGroupPrompt(
     // 该成员与用户的私聊近况（让群聊和私聊上下文打通——前脚私聊聊的，群里也记得）
     const privateChat = await buildMemberPrivateChatText(m.id, userName)
     if (privateChat) parts.push(`TA 最近和 ${userName} 的私聊记录：\n${privateChat}`)
+    // 该成员的专属常用表情（按情绪分组；speaker 写 TA 时只能从 TA 自己的专属表情里选）
+    const memberStickerText = buildCustomStickerText(m)
+    if (memberStickerText) parts.push(`【${m.name} 的专属常用表情】${memberStickerText.replace(/^【你的专属常用表情】/, '')}`)
   }
 
   // 本群所有人的群 ID 一览（含用户），群里成员都能看到彼此的群 ID
@@ -274,6 +278,10 @@ async function buildFineGroupPrompt(
     if (sceneText) parts.push(`你和 ${userName} 线下相处的回忆：\n${truncate(sceneText, MEMBER_SCENE_SUMMARY_MAX)}`)
     const privateChat = await buildMemberPrivateChatText(m.id, userName)
     if (privateChat) parts.push(`你最近和 ${userName} 的私聊：\n${privateChat}`)
+
+    // 该成员的专属常用表情（被选中扮演 TA 时优先用）
+    const memberStickerText = buildCustomStickerText(m)
+    if (memberStickerText) parts.push(memberStickerText)
 
     // 你对群里其他人的了解（acquaintances，随接触递增；没记录=还不了解 TA）
     const acq = m.acquaintances || {}
@@ -807,11 +815,11 @@ class GroupChatScheduler {
         const item = queue.shift()!
         // 角色发言时若想改自己的群 ID，先应用（发系统提示 + 写回）
         if (item.groupIdUpdate) await this.applyGroupIdUpdate(item.senderId, item.groupIdUpdate)
-        if (item.type === 'image' && item.imagePrompt && isComfyAvailable()) {
+        if (item.type === 'image' && item.imagePrompt && isImageGenAvailable()) {
           let imageData: string | undefined
           try {
-            const finalPrompt = await generateImagePrompt(item.imagePrompt)
-            const gen = await generateComfyImage(finalPrompt)
+            const finalPrompt = await refineImagePrompt(item.imagePrompt)
+            const gen = await generateImage(finalPrompt)
             if (gen.ok && gen.image) imageData = gen.image
             else console.warn('[group-scheduler] 配图生成失败：', gen.error)
           } catch (e) {
@@ -875,12 +883,12 @@ class GroupChatScheduler {
     // 角色发言时若想改自己的群 ID，先应用（发系统提示 + 写回）
     if (item.groupIdUpdate) await this.applyGroupIdUpdate(item.senderId, item.groupIdUpdate)
 
-    if (item.type === 'image' && item.imagePrompt && isComfyAvailable()) {
+    if (item.type === 'image' && item.imagePrompt && isImageGenAvailable()) {
       // 群聊图片消息：分发时实时出图；失败降级为文字
       let imageData: string | undefined
       try {
-        const finalPrompt = await generateImagePrompt(item.imagePrompt)
-        const gen = await generateComfyImage(finalPrompt)
+        const finalPrompt = await refineImagePrompt(item.imagePrompt)
+        const gen = await generateImage(finalPrompt)
         if (gen.ok && gen.image) imageData = gen.image
         else console.warn('[group-scheduler] 配图生成失败：', gen.error)
       } catch (e) {

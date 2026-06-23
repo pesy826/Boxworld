@@ -1,4 +1,23 @@
-import type { Settings, ComfyConfig, VoiceConfig } from '../types'
+import type { Settings, ComfyConfig, VoiceConfig, NaiConfig } from '../types'
+
+export function createDefaultNaiConfig(): NaiConfig {
+  return {
+    enabled: false,
+    apiKey: '',
+    baseUrl: 'https://image.novelai.net',
+    model: 'nai-diffusion-4-5-full',
+    width: 832,
+    height: 1216,
+    steps: 28,
+    scale: 5,
+    sampler: 'k_euler_ancestral',
+    negativePrompt: 'lowres, worst quality, bad anatomy, bad hands, text, error, watermark, blurry',
+    positivePrefix: '',
+    positiveSuffix: '',
+    timeoutSec: 120,
+    promptGenEnabled: false,
+  }
+}
 
 export function createDefaultVoiceConfig(): VoiceConfig {
   return {
@@ -95,6 +114,9 @@ export function createDefaultSettings(): Settings {
     groupFineMaxRounds: 6,
     activeSoloCharacterId: undefined,
     comfyConfig: createDefaultComfyConfig(),
+    naiConfig: createDefaultNaiConfig(),
+    imageBackend: 'comfy',
+    theme: 'system',
     voiceConfig: createDefaultVoiceConfig(),
   }
 }

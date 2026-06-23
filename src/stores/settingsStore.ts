@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 import { db } from '../db'
-import { createDefaultComfyConfig, createDefaultVoiceConfig } from '../db/defaults'
-import type { Settings, ApiConfig, UserPersona, TickConfig, ApiEndpoint, UtilityType, ChatBehaviorConfig, ComfyConfig, GroupChatMode, VoiceConfig } from '../types'
+import { createDefaultComfyConfig, createDefaultVoiceConfig, createDefaultNaiConfig } from '../db/defaults'
+import { applyTheme } from '../utils/theme'
+import type { Settings, ApiConfig, UserPersona, TickConfig, ApiEndpoint, UtilityType, ChatBehaviorConfig, ComfyConfig, NaiConfig, ImageBackend, GroupChatMode, VoiceConfig } from '../types'
 
 interface SettingsStore {
   settings: Settings | null
@@ -14,7 +15,10 @@ interface SettingsStore {
   updateTickConfig: (patch: Partial<TickConfig>) => Promise<void>
   updateChatBehavior: (patch: Partial<ChatBehaviorConfig>) => Promise<void>
   updateComfyConfig: (patch: Partial<ComfyConfig>) => Promise<void>
+  updateNaiConfig: (patch: Partial<NaiConfig>) => Promise<void>
   updateVoiceConfig: (patch: Partial<VoiceConfig>) => Promise<void>
+  setImageBackend: (backend: ImageBackend) => Promise<void>
+  setTheme: (theme: 'light' | 'dark' | 'system') => Promise<void>
   setGroupChatMode: (mode: GroupChatMode) => Promise<void>
   setGroupFineMaxRounds: (rounds: number) => Promise<void>
   setGroupMemberPrivateChatRecent: (count: number) => Promise<void>
@@ -86,6 +90,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ settings: next })
   },
 
+  updateNaiConfig: async (patch) => {
+    const cur = get().settings
+    if (!cur) return
+    const base = cur.naiConfig || createDefaultNaiConfig()
+    const next: Settings = { ...cur, naiConfig: { ...base, ...patch } }
+    await db.settings.put(next)
+    set({ settings: next })
+  },
+
   updateVoiceConfig: async (patch) => {
     const cur = get().settings
     if (!cur) return
@@ -93,6 +106,23 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const next: Settings = { ...cur, voiceConfig: { ...base, ...patch } }
     await db.settings.put(next)
     set({ settings: next })
+  },
+
+  setImageBackend: async (backend) => {
+    const cur = get().settings
+    if (!cur) return
+    const next: Settings = { ...cur, imageBackend: backend }
+    await db.settings.put(next)
+    set({ settings: next })
+  },
+
+  setTheme: async (theme) => {
+    const cur = get().settings
+    if (!cur) return
+    const next: Settings = { ...cur, theme }
+    await db.settings.put(next)
+    set({ settings: next })
+    applyTheme(theme)
   },
 
   setGroupChatMode: async (mode) => {

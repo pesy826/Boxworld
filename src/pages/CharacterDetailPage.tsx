@@ -6,6 +6,7 @@ import { useChatStore } from '../stores/chatStore'
 import { useLorebookStore } from '../stores/lorebookStore'
 import { useWorldSummaryStore } from '../stores/worldSummaryStore'
 import Avatar from '../components/Avatar'
+import CharacterStickerSlots from '../components/CharacterStickerSlots'
 import { usePageTour } from '../components/TourOverlay'
 import { characterDetailTour } from '../components/tours'
 
@@ -107,6 +108,9 @@ export default function CharacterDetailPage() {
       <div data-tour="user-profile">
         <UserProfileSection character={character} />
       </div>
+
+      {/* 角色专属常用表情（按情绪分类上传，聊天时优先发） */}
+      <CharacterStickerSlots character={character} />
 
       {/* 关联资源入口 */}
       <div className="mt-3 bg-white">

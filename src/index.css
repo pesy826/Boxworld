@@ -2,18 +2,96 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============ 主题配色变量（亮/暗） ============ */
+:root {
+  --wc-bg: #EDEDED;          /* 主背景灰 */
+  --wc-nav: #F7F7F7;         /* 顶部/底部导航 */
+  --wc-bubble: #A9EA7A;      /* 自己发的气泡绿 */
+  --wc-divider: #E5E5E5;     /* 分割线 */
+  --wc-text: #181818;        /* 主文字 */
+  --wc-text-gray: #888888;   /* 次要文字 */
+  --wc-card: #FFFFFF;        /* 卡片/面板底色（亮色=白） */
+}
+
+html.dark {
+  --wc-bg: #111111;
+  --wc-nav: #1C1C1E;
+  --wc-bubble: #2A6E3F;      /* 暗色下的气泡绿（压暗，文字仍清晰） */
+  --wc-divider: #2A2A2A;
+  --wc-text: #E6E6E6;
+  --wc-text-gray: #9A9A9A;
+  --wc-card: #1C1C1E;        /* 卡片底色（暗色=深灰） */
+  color-scheme: dark;
+}
+
+/*
+ * 暗色下覆盖项目中大量硬编码的原生工具类，避免逐个组件改 className。
+ * 仅在 html.dark 作用域生效；映射到对应的主题变量。
+ */
+/* 卡片/面板/输入底色 */
+html.dark .bg-white { background-color: var(--wc-card) !important; }
+/* stone 系（场景模式页大量使用） */
+html.dark .bg-stone-50,
+html.dark .bg-stone-100 { background-color: var(--wc-nav) !important; }
+html.dark .border-stone-200,
+html.dark .border-stone-300 { border-color: var(--wc-divider) !important; }
+/* gray 系背景 */
+html.dark .bg-gray-50,
+html.dark .bg-gray-100,
+html.dark .bg-gray-200,
+html.dark .bg-gray-300 { background-color: var(--wc-nav) !important; }
+/* gray 系边框 */
+html.dark .border-gray-100,
+html.dark .border-gray-200,
+html.dark .border-gray-300 { border-color: var(--wc-divider) !important; }
+/* 文字色：深灰文字在暗色下提亮 */
+html.dark .text-black { color: var(--wc-text) !important; }
+html.dark .text-gray-300,
+html.dark .text-gray-400,
+html.dark .text-gray-500 { color: var(--wc-text-gray) !important; }
+html.dark .text-gray-600,
+html.dark .text-gray-700,
+html.dark .text-gray-800,
+html.dark .text-gray-900 { color: var(--wc-text) !important; }
+
+/*
+ * 表单控件：项目里 input/textarea/select 多用 bg-white 或透明底 + 默认黑字。
+ * 暗色下强制文字跟主文字色，避免"深底黑字"看不清；带 bg-white 的底色跟卡片。
+ */
+html.dark input,
+html.dark textarea,
+html.dark select {
+  color: var(--wc-text);
+}
+html.dark input.bg-white,
+html.dark textarea.bg-white,
+html.dark select.bg-white {
+  background-color: var(--wc-card) !important;
+}
+/* 下拉选项在某些系统下需要显式底色 */
+html.dark option {
+  background-color: var(--wc-card);
+  color: var(--wc-text);
+}
+/* 浅色信息条（测试结果的 bg-green-50 / bg-red-50）在暗色下压暗 */
+html.dark .bg-green-50 { background-color: rgba(7, 193, 96, 0.14) !important; }
+html.dark .bg-red-50 { background-color: rgba(239, 68, 68, 0.14) !important; }
+
 /* 全局重置 */
 html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background-color: #EDEDED;
+  background-color: var(--wc-bg);
+  color: var(--wc-text);
   overscroll-behavior: none;
 }
+html.dark body { background-color: var(--wc-bg); }
 
 #root {
   display: flex;
   justify-content: center;
+  background-color: var(--wc-bg);
 }
 
 /* 移除默认的 App.css 干扰，等下我们会清掉它 */
@@ -49,6 +127,17 @@ html, body, #root {
 .boxworld-scroll::-webkit-scrollbar-thumb:hover {
   background-color: rgba(0, 0, 0, 0.38);
 }
+/* 暗色下滚动条提亮 */
+html.dark .boxworld-scroll {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+html.dark .boxworld-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+html.dark .boxworld-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.38);
+}
+
 /* 移动端安全区域支持 */
 @layer utilities {
   .pt-safe { padding-top: env(safe-area-inset-top); }

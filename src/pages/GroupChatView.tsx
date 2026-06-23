@@ -15,6 +15,10 @@ import StickerImage from '../components/StickerImage'
 import StickerPanel from '../components/StickerPanel'
 import ImageLightbox from '../components/ImageLightbox'
 import GroupMemberPicker from '../components/GroupMemberPicker'
+import VoiceBar from '../components/VoiceBar'
+import { generateMessageVoice, isTtsAvailable } from '../services/ttsService'
+import { fileToDataUrl } from '../utils/image'
+import ImageCropper from '../components/ImageCropper'
 import { formatTime, formatDate } from '../utils/time'
 import { useVirtualTime } from '../services/useVirtualTime'
 import type { Chat, Message } from '../types'
@@ -121,6 +125,18 @@ export default function GroupChatView({ chat }: { chat: Chat }) {
       },
     })
 
+    // 转语音（文字消息 + 语音通话已启用时；气泡下方挂语音条）
+    if (msg.type === 'text' && isTtsAvailable()) {
+      items.push({
+        label: msg.voiceData ? '重新转语音' : '转语音',
+        onClick: async () => {
+          setError(null)
+          const r = await generateMessageVoice(msg.id, msg.content)
+          if (!r.ok) setError(r.error || '转语音失败')
+        },
+      })
+    }
+
     if (msg.role === 'assistant' && msg.batchId) {
       items.push({
         label: '重发这一轮',
@@ -212,18 +228,37 @@ export default function GroupChatView({ chat }: { chat: Chat }) {
         />
       )}
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 scrollbar-hide">
-        <GroupMessageList
-          messages={messages}
-          getCharacter={getCharacter}
-          onMessageContextMenu={openContextMenu}
-          onAvatarClick={(senderId) => navigate(`/character/${senderId}`)}
-        />
-        {error && (
-          <div className="mx-2 mt-2 p-2 bg-red-50 text-red-600 text-[12px] rounded">
-            {error}
-          </div>
+      <div className="flex-1 relative overflow-hidden">
+        {/* 固定背景层：不随消息滚动 */}
+        {chat.background && (
+          <>
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{
+                backgroundImage: `url(${chat.background})`,
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+              }}
+            />
+            <div className="absolute inset-0 pointer-events-none bg-black/0 dark:bg-black/30" />
+          </>
         )}
+        <div
+          ref={scrollRef}
+          className="absolute inset-0 overflow-y-auto px-3 py-3 scrollbar-hide"
+        >
+          <GroupMessageList
+            messages={messages}
+            getCharacter={getCharacter}
+            onMessageContextMenu={openContextMenu}
+            onAvatarClick={(senderId) => navigate(`/character/${senderId}`)}
+          />
+          {error && (
+            <div className="mx-2 mt-2 p-2 bg-red-50 text-red-600 text-[12px] rounded">
+              {error}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="shrink-0 bg-wechat-nav border-t border-wechat-divider px-2 py-2 pb-safe">
@@ -437,7 +472,7 @@ function GroupBubble({
           onTouchEnd={handleTouchEnd}
           onTouchCancel={handleTouchEnd}
         >
-          {isSticker ? <StickerImage desc={message.content} size={100} />
+          {isSticker ? <StickerImage desc={message.content} size={100} senderCharacterId={message.senderId} />
             : isImage ? (
               <img
                 src={message.imageData}
@@ -448,6 +483,15 @@ function GroupBubble({
             )
               : message.content}
         </div>
+        {/* 转语音生成的语音条（挂在气泡下方，不影响原文本） */}
+        {message.type === 'text' && message.voiceData && (
+          <VoiceBar
+            messageId={message.id}
+            voiceData={message.voiceData}
+            duration={message.voiceDuration}
+            isUser={isUser}
+          />
+        )}
       </div>
       {lightbox && (
         <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
@@ -472,6 +516,19 @@ function GroupInfoPanel({
   const members = (chat.memberIds || []).map((id) => getCharacter(id))
   const [showPicker, setShowPicker] = useState(false)
   const [editMode, setEditMode] = useState(false)
+  const bgInputRef = useRef<HTMLInputElement>(null)
+  const [bgCropSrc, setBgCropSrc] = useState<string | null>(null)
+
+  const handlePickBackground = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    try {
+      const dataUrl = await fileToDataUrl(files[0])
+      setBgCropSrc(dataUrl)
+    } catch {
+      alert('背景图处理失败')
+    }
+    if (bgInputRef.current) bgInputRef.current.value = ''
+  }
 
   const groupIds = chat.groupIds || {}
   const userGroupId = groupIds['user']?.trim() || ''
@@ -616,8 +673,26 @@ function GroupInfoPanel({
           <Row label="显示群成员昵称" value="" />
         </div>
 
+        <input
+          ref={bgInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => handlePickBackground(e.target.files)}
+        />
         <div className="mt-2 divide-y divide-wechat-divider">
-          <Row label="设置当前聊天背景" value="" onClick={() => { }} />
+          <Row
+            label="设置当前聊天背景"
+            value={chat.background ? '已设置' : ''}
+            onClick={() => bgInputRef.current?.click()}
+          />
+          {chat.background && (
+            <Row
+              label="恢复默认背景"
+              value=""
+              onClick={() => useChatStore.getState().clearChatBackground(chat.id)}
+            />
+          )}
           <Row label="查找聊天记录" value="" onClick={() => { }} />
         </div>
 
@@ -646,6 +721,17 @@ function GroupInfoPanel({
           worldId={chat.worldId}
           onConfirm={handleInvite}
           onClose={() => setShowPicker(false)}
+        />
+      )}
+
+      {bgCropSrc && (
+        <ImageCropper
+          src={bgCropSrc}
+          onCancel={() => setBgCropSrc(null)}
+          onConfirm={async (dataUrl) => {
+            setBgCropSrc(null)
+            await useChatStore.getState().setChatBackground(chat.id, dataUrl)
+          }}
         />
       )}
     </div>

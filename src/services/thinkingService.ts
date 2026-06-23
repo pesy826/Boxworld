@@ -8,7 +8,8 @@ import { useTickLogStore } from '../stores/tickLogStore'
 import { getActiveUtilityPrompt } from './utilityPrompts'
 import { timeService } from './timeService'
 import { getScheduler } from './messageScheduler'
-import { isComfyAvailable, generateComfyImage, generateImagePrompt } from './comfyService'
+import { isImageGenAvailable, generateImage, refineImagePrompt } from './imageGenService'
+import { buildCustomStickerText } from './customStickers'
 import type { Character, Message, Moment, MomentComment } from '../types'
 
 export interface ThinkingResult {
@@ -99,7 +100,7 @@ ${character.scenario ? `场景：${character.scenario}` : ''}${mainCharBrief}
 
 【当前时间】
 ${context.currentTimeText}
-距离你上次和用户互动：${context.sinceLastInteractionText}${buildComfyHint()}`
+距离你上次和用户互动：${context.sinceLastInteractionText}${buildComfyHint()}${buildCustomStickerHint(character)}`
 
   const userPrompt = buildUserPromptContent(context)
 
@@ -228,6 +229,15 @@ async function buildContext(character: Character): Promise<ThinkingContext> {
     privateMemoryText: character.privateMemory?.trim() || '',
     acquaintancesText,
   }
+}
+
+/**
+ * 深思时若角色配了专属常用表情，注入说明：private_messages 里发 sticker 时
+ * 优先用自己的专属表情（content 写专属表情名）。
+ */
+function buildCustomStickerHint(character: Character): string {
+  const text = buildCustomStickerText(character)
+  return text ? `\n\n${text}\n（在 private_messages 里发 type:"sticker" 时，content 可写上面的专属表情名）` : ''
 }
 
 function buildUserPromptContent(ctx: ThinkingContext): string {
@@ -389,10 +399,10 @@ async function applyThinkingResult(
   if (parsed.should_post_moment && parsed.moment_content?.trim()) {
     let images: string[] = []
     let imageDescriptions: string[] = []
-    if (parsed.moment_image_prompt && isComfyAvailable()) {
+    if (parsed.moment_image_prompt && isImageGenAvailable()) {
       try {
-        const finalPrompt = await generateImagePrompt(parsed.moment_image_prompt)
-        const gen = await generateComfyImage(finalPrompt)
+        const finalPrompt = await refineImagePrompt(parsed.moment_image_prompt)
+        const gen = await generateImage(finalPrompt)
         if (gen.ok && gen.image) {
           images = [gen.image]
           imageDescriptions = [parsed.moment_image_desc || '配图']
@@ -490,7 +500,7 @@ function resolveCharacterByName(name: string, selfId: string): Character | undef
 
 /** ComfyUI 可用时，给深思 prompt 动态追加配图能力说明（移动端/未启用时不注入，AI 不会输出相关字段） */
 function buildComfyHint(): string {
-  if (!isComfyAvailable()) return ''
+  if (!isImageGenAvailable()) return ''
   return `
 
 【朋友圈配图能力】

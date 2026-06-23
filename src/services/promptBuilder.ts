@@ -8,7 +8,8 @@ import { useSceneSummaryStore } from '../stores/sceneSummaryStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useCharacterStore } from '../stores/characterStore'
 import { useStickerStore } from '../stores/assetStore'
-import { isComfyAvailable } from './comfyService'
+import { isImageGenAvailable } from './imageGenService'
+import { buildCustomStickerText } from './customStickers'
 import {
   buildUserMomentsText, buildCharacterMomentsText, buildMomentInteractionsText,
 } from './momentContext'
@@ -85,7 +86,7 @@ export async function buildPrompt(args: BuildPromptArgs): Promise<OpenAIMessage[
 
   // IM 模式自动注入可用表情列表（有表情库才注入）
   if (preset.mode === 'im') {
-    const stickerText = buildStickerListText()
+    const stickerText = buildStickerListText(100, character)
     if (stickerText) {
       messages.push({ role: 'system', content: stickerText })
     }
@@ -109,9 +110,15 @@ export async function buildPrompt(args: BuildPromptArgs): Promise<OpenAIMessage[
  * - 用"像真人"贴合角色扮演动机
  * - 保留"别滥发"约束，防止矫枉过正
  */
-export function buildStickerListText(maxCount = 100): string {
+export function buildStickerListText(maxCount = 100, character?: Character): string {
+  // 角色专属常用表情（按情绪分组 + 6/4 占比引导），放在通用库前面优先呈现
+  const customText = buildCustomStickerText(character)
+
   const stickers = useStickerStore.getState().stickers
-  if (stickers.length === 0) return ''
+  if (stickers.length === 0) {
+    // 没有通用库，但若有专属表情仍需注入
+    return customText
+  }
   // 用户收藏/上传的表情优先全量进列表（让角色能"偷"用户的表情包），剩余名额再从库里随机补
   const favorites = stickers.filter((s) => s.favorite)
   const others = stickers.filter((s) => !s.favorite)
@@ -121,9 +128,10 @@ export function buildStickerListText(maxCount = 100): string {
     : others
   const pool = [...favorites, ...sampledOthers]
   const names = pool.map((s) => s.desc).join('、')
-  return `【表情包】你会像真人一样在微信聊天中发表情包活跃气氛。开心、大笑、无语、调侃、敷衍、害羞、生气、震惊等情绪明显的时刻，或者想斗图逗对方时，就单独发一条表情消息（type:"sticker"，content 写表情名）。聊得起劲时大胆用，但别每条都发。
+  const libText = `【表情包】你会像真人一样在微信聊天中发表情包活跃气氛。开心、大笑、无语、调侃、敷衍、害羞、生气、震惊等情绪明显的时刻，或者想斗图逗对方时，就单独发一条表情消息（type:"sticker"，content 写表情名）。聊得起劲时大胆用，但别每条都发。
 可用表情（content 必须从中选一个，完整复制名字、可含连字符，禁止编造）：
 ${names}`
+  return customText ? `${customText}\n\n${libText}` : libText
 }
 
 /**
@@ -131,7 +139,7 @@ ${names}`
  * 同表情包的经验：主动行为引导（何时发）+ 别滥发约束。
  */
 export function buildChatImageHint(): string {
-  if (!isComfyAvailable()) return ''
+  if (!isImageGenAvailable()) return ''
   return `【发图片】你可以像真人一样在微信里发照片：分享美食、风景、自拍、宠物、正在做的事、看到的有趣东西时，发一张图片消息让聊天更生动。聊到"我给你看""拍给你"或对方让你发照片时，更应该发。
 发图片消息的格式（messages 数组里的一项）：
 {"type": "image", "content": "图片的中文一句话描述（20-40字）", "image_prompt": "英文文生图提示词，Stable Diffusion 风格逗号分隔标签，描述画面内容/构图/光线，不要出现人名"}

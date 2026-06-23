@@ -6,7 +6,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useCharacterStore } from '../stores/characterStore'
 import { usePresetStore } from '../stores/presetStore'
 import { timeService } from './timeService'
-import { generateComfyImage, generateImagePrompt, isComfyAvailable } from './comfyService'
+import { generateImage, refineImagePrompt, isImageGenAvailable } from './imageGenService'
 import { uuid } from '../utils/id'
 import type { Character, Preset } from '../types'
 
@@ -276,11 +276,11 @@ class ChatScheduler {
         // 图片消息：分发时实时出图（耗时操作）；失败降级为文字描述
         if (item.type === 'image' && item.imagePrompt) {
             let imageData: string | undefined
-            if (isComfyAvailable()) {
+            if (isImageGenAvailable()) {
                 try {
                     // 可选：用辅助模型把描述改写成规范英文提示词（promptGenEnabled 开启时；否则原样返回）
-                    const finalPrompt = await generateImagePrompt(item.imagePrompt)
-                    const gen = await generateComfyImage(finalPrompt)
+                    const finalPrompt = await refineImagePrompt(item.imagePrompt)
+                    const gen = await generateImage(finalPrompt)
                     if (gen.ok && gen.image) imageData = gen.image
                     else console.warn('[scheduler] 聊天配图生成失败：', gen.error)
                 } catch (e) {

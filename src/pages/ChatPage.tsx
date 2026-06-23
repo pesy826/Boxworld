@@ -4,7 +4,8 @@ import { ChevronLeft, MoreHorizontal, Send, Smile, Plus } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { useCharacterStore } from '../stores/characterStore'
 import { useStickerStore } from '../stores/assetStore'
-import { fileToCompressedDataUrl } from '../utils/image'
+import { fileToCompressedDataUrl, fileToDataUrl } from '../utils/image'
+import ImageCropper from '../components/ImageCropper'
 import { sendGreetingIfNeeded, regenerateBatch, resetGreetingFlag } from '../services/chatService'
 import { getScheduler, disposeScheduler, type SchedulerStatus } from '../services/messageScheduler'
 import { SafeTextarea } from '../components/SafeTextarea'
@@ -21,6 +22,8 @@ import { useSettingsStore } from '../stores/settingsStore'
 import type { Message } from '../types'
 import { timeService } from '../services/timeService'
 import { isCharacterLockedForGlobal } from '../services/soloModeService'
+import { generateMessageVoice, isTtsAvailable } from '../services/ttsService'
+import VoiceBar from '../components/VoiceBar'
 import { usePageTour } from '../components/TourOverlay'
 import { chatTour } from '../components/tours'
 import GroupChatView from './GroupChatView'
@@ -61,6 +64,7 @@ function SingleChatView({ chatId }: { chatId: string }) {
     const [showPlus, setShowPlus] = useState(false)
     const scrollRef = useRef<HTMLDivElement>(null)
     const imageInputRef = useRef<HTMLInputElement>(null)
+    const bgInputRef = useRef<HTMLInputElement>(null)
     const voiceEnabled = !!useSettingsStore.getState().settings?.voiceConfig?.enabled
 
     const [contextMenu, setContextMenu] = useState<{
@@ -70,6 +74,8 @@ function SingleChatView({ chatId }: { chatId: string }) {
     } | null>(null)
     const [editing, setEditing] = useState<Message | null>(null)
     const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+    // 待裁剪的背景原图（打开裁剪弹层）
+    const [bgCropSrc, setBgCropSrc] = useState<string | null>(null)
 
     // 调度器状态
     const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus>({
@@ -150,6 +156,19 @@ function SingleChatView({ chatId }: { chatId: string }) {
         if (imageInputRef.current) imageInputRef.current.value = ''
     }
 
+    const handlePickBackground = async (files: FileList | null) => {
+        if (!files || files.length === 0) return
+        setError(null)
+        try {
+            // 读原图打开裁剪弹层，让用户自由选定展示区域
+            const dataUrl = await fileToDataUrl(files[0])
+            setBgCropSrc(dataUrl)
+        } catch (e: any) {
+            setError(e?.message || '背景图处理失败')
+        }
+        if (bgInputRef.current) bgInputRef.current.value = ''
+    }
+
     const handleKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault()
@@ -186,6 +205,19 @@ function SingleChatView({ chatId }: { chatId: string }) {
                 if (msg.type === 'text') setEditing(msg)
             },
         })
+
+        // 转语音（文字消息 + 语音通话已启用时才有；复用语音通话的 TTS 端点）
+        // 在气泡下方挂一个语音条，不影响原文本显示
+        if (msg.type === 'text' && isTtsAvailable()) {
+            items.push({
+                label: msg.voiceData ? '重新转语音' : '转语音',
+                onClick: async () => {
+                    setError(null)
+                    const r = await generateMessageVoice(msg.id, msg.content)
+                    if (!r.ok) setError(r.error || '转语音失败')
+                },
+            })
+        }
 
         // 把角色发的表情/图片"添加到喜欢"（出现在发表情面板里，AI 也能复用）
         if (msg.role === 'assistant' && msg.type === 'sticker') {
@@ -302,11 +334,20 @@ function SingleChatView({ chatId }: { chatId: string }) {
                     </button>
                     {showMenu && (
                         <ChatMenu
+                            hasBackground={!!chat.background}
                             onClose={() => setShowMenu(false)}
                             onGoCharacter={() => navigate(`/character/${character.id}`)}
                             onGoScene={() => {
                                 setShowMenu(false)
                                 navigate(`/scene/${chat.id}`)
+                            }}
+                            onSetBackground={() => {
+                                setShowMenu(false)
+                                bgInputRef.current?.click()
+                            }}
+                            onClearBackground={async () => {
+                                setShowMenu(false)
+                                await useChatStore.getState().clearChatBackground(chat.id)
                             }}
                             onClearMessages={async () => {
                                 if (confirm('清空所有消息？')) {
@@ -326,18 +367,45 @@ function SingleChatView({ chatId }: { chatId: string }) {
                 </div>
             )}
 
-            <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 scrollbar-hide">
-                <MessageList
-                    messages={messages}
-                    character={character}
-                    onMessageContextMenu={openContextMenu}
-                    onImageClick={(src) => setLightboxSrc(src)}
-                />
-                {error && (
-                    <div className="mx-2 mt-2 p-2 bg-red-50 text-red-600 text-[12px] rounded">
-                        {error}
-                    </div>
+            <input
+                ref={bgInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => handlePickBackground(e.target.files)}
+            />
+            <div className="flex-1 relative overflow-hidden">
+                {/* 固定背景层：不随消息滚动 */}
+                {chat.background && (
+                    <>
+                        <div
+                            className="absolute inset-0 pointer-events-none"
+                            style={{
+                                backgroundImage: `url(${chat.background})`,
+                                backgroundSize: 'cover',
+                                backgroundPosition: 'center',
+                            }}
+                        />
+                        <div className="absolute inset-0 pointer-events-none bg-black/0 dark:bg-black/30" />
+                    </>
                 )}
+                <div
+                    ref={scrollRef}
+                    className="absolute inset-0 overflow-y-auto px-3 py-3 scrollbar-hide"
+                >
+                    <MessageList
+                        messages={messages}
+                        character={character}
+                        characterId={character.id}
+                        onMessageContextMenu={openContextMenu}
+                        onImageClick={(src) => setLightboxSrc(src)}
+                    />
+                    {error && (
+                        <div className="mx-2 mt-2 p-2 bg-red-50 text-red-600 text-[12px] rounded">
+                            {error}
+                        </div>
+                    )}
+                </div>
             </div>
             <div className="shrink-0 bg-wechat-nav border-t border-wechat-divider px-2 py-2 pb-safe">
                 <div className="flex items-end gap-2">
@@ -417,15 +485,27 @@ function SingleChatView({ chatId }: { chatId: string }) {
             {lightboxSrc && (
                 <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
             )}
+
+            {bgCropSrc && (
+                <ImageCropper
+                    src={bgCropSrc}
+                    onCancel={() => setBgCropSrc(null)}
+                    onConfirm={async (dataUrl) => {
+                        setBgCropSrc(null)
+                        await useChatStore.getState().setChatBackground(chat.id, dataUrl)
+                    }}
+                />
+            )}
         </div>
     )
 }
 
 function MessageList({
-    messages, character, onMessageContextMenu, onImageClick,
+    messages, character, characterId, onMessageContextMenu, onImageClick,
 }: {
     messages: Message[]
     character: { name: string; avatar?: string }
+    characterId?: string
     onMessageContextMenu: (e: { clientX: number; clientY: number }, msg: Message) => void
     onImageClick: (src: string) => void
 }) {
@@ -466,6 +546,7 @@ function MessageList({
                 key={msg.id}
                 message={msg}
                 character={character}
+                characterId={characterId}
                 onContextMenu={(e) => {
                     e.preventDefault()
                     onMessageContextMenu(e, msg)
@@ -511,10 +592,11 @@ function SystemNotice({
 }
 
 function MessageBubble({
-    message, character, onContextMenu, onImageClick,
+    message, character, characterId, onContextMenu, onImageClick,
 }: {
     message: Message
     character: { name: string; avatar?: string }
+    characterId?: string
     onContextMenu: (e: React.MouseEvent) => void
     onImageClick: (src: string) => void
 }) {
@@ -569,7 +651,7 @@ function MessageBubble({
                     onTouchEnd={handleTouchEnd}
                     onTouchCancel={handleTouchEnd}
                 >
-                    {isSticker ? <StickerImage desc={message.content} size={110} />
+                    {isSticker ? <StickerImage desc={message.content} size={110} senderCharacterId={!isUser ? characterId : undefined} />
                         : isImage ? (
                             <img
                                 src={message.imageData}
@@ -580,18 +662,30 @@ function MessageBubble({
                         )
                             : message.content}
                 </div>
+                {/* 转语音生成的语音条（挂在气泡下方，不影响原文本） */}
+                {message.type === 'text' && message.voiceData && (
+                    <VoiceBar
+                        messageId={message.id}
+                        voiceData={message.voiceData}
+                        duration={message.voiceDuration}
+                        isUser={isUser}
+                    />
+                )}
             </div>
         </div>
     )
 }
 
 function ChatMenu({
-    onClose, onGoCharacter, onGoScene, onClearMessages,
+    onClose, onGoCharacter, onGoScene, onSetBackground, onClearBackground, onClearMessages, hasBackground,
 }: {
     onClose: () => void
     onGoCharacter: () => void
     onGoScene: () => void
+    onSetBackground: () => void
+    onClearBackground: () => void
     onClearMessages: () => void
+    hasBackground: boolean
 }) {
     return (
         <>
@@ -599,6 +693,8 @@ function ChatMenu({
             <div className="absolute right-0 top-full mt-1 w-40 bg-white shadow-lg rounded border border-wechat-divider z-20 text-[14px]">
                 <MenuRow onClick={onGoCharacter}>角色详情</MenuRow>
                 <MenuRow onClick={onGoScene}>切换到场景模式</MenuRow>
+                <MenuRow onClick={onSetBackground}>设置聊天背景</MenuRow>
+                {hasBackground && <MenuRow onClick={onClearBackground}>恢复默认背景</MenuRow>}
                 <MenuRow onClick={onClearMessages} danger>清空消息</MenuRow>
             </div>
         </>
