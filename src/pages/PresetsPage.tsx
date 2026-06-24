@@ -39,6 +39,7 @@ export default function PresetsPage() {
   const resetBuiltins = usePresetStore((s) => s.resetBuiltins)
   const settings = useSettingsStore((s) => s.settings)
   const setActive = useSettingsStore((s) => s.setActiveUtilityPreset)
+  const setDefault = useSettingsStore((s) => s.setDefaultPreset)
 
   const imPresets = presets.filter((p) => p.mode === 'im')
   const scenePresets = presets.filter((p) => p.mode === 'scene')
@@ -73,7 +74,9 @@ export default function PresetsPage() {
       const label = `${name}（${mode === 'scene' ? '场景' : '微信'}）`
       const p = await create(mode, label)
       await updateSlots(p.id, slots)
-      alert(`已导入酒馆预设：${label}\n共 ${slots.length} 个槽位，${slots.filter((s) => s.enabled).length} 个启用。\n可点击进入查看并按需调整。`)
+      // 导入后自动设为当前使用，省得用户找不到切换入口
+      await setDefault(mode, p.id)
+      alert(`已导入酒馆预设：${label}\n共 ${slots.length} 个槽位，${slots.filter((s) => s.enabled).length} 个启用，并已设为当前使用。\n可点击进入查看并按需调整。`)
       navigate(`/preset/${p.id}`)
     } catch {
       alert('导入失败：请确认选择的是有效的酒馆预设 JSON 文件')
@@ -102,6 +105,8 @@ export default function PresetsPage() {
         title="微信模式预设"
         icon={<MessageCircle size={16} className="text-wechat-green" />}
         presets={imPresets}
+        activeId={settings?.defaultImPresetId}
+        onSetActive={(id) => setDefault('im', id)}
         onCreate={() => handleCreate('im')}
         onImport={(file) => handleImportST(file, 'im')}
         onOpen={(id) => navigate(`/preset/${id}`)}
@@ -111,6 +116,8 @@ export default function PresetsPage() {
         title="场景模式预设"
         icon={<Sparkles size={16} className="text-purple-500" />}
         presets={scenePresets}
+        activeId={settings?.defaultScenePresetId}
+        onSetActive={(id) => setDefault('scene', id)}
         onCreate={() => handleCreate('scene')}
         onImport={(file) => handleImportST(file, 'scene')}
         onOpen={(id) => navigate(`/preset/${id}`)}
@@ -179,16 +186,24 @@ export default function PresetsPage() {
 }
 
 function PresetGroup({
-  title, icon, presets, onCreate, onImport, onOpen,
+  title, icon, presets, activeId, onSetActive, onCreate, onImport, onOpen,
 }: {
   title: string
   icon: React.ReactNode
   presets: ReturnType<typeof usePresetStore.getState>['presets']
+  /** 当前全局默认使用的预设 id（角色未单独指定时用） */
+  activeId?: string
+  /** 设为当前使用 */
+  onSetActive?: (id: string) => void
   onCreate: () => void
   onImport?: (file: File) => void
   onOpen: (id: string) => void
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
+  // 没有显式选默认时，运行时回退到该模式第一个预设；这里同样高亮第一个，避免"看起来一个都没选"
+  const effectiveActiveId = activeId && presets.some((p) => p.id === activeId)
+    ? activeId
+    : presets[0]?.id
   return (
     <div className="mt-3">
       <div className="px-4 py-2 text-[12px] text-wechat-textGray flex items-center gap-1">
@@ -219,26 +234,43 @@ function PresetGroup({
       )}
       <div className="bg-white">
         {presets.map((p) => (
-          <button
+          <div
             key={p.id}
-            onClick={() => onOpen(p.id)}
-            className="w-full flex items-center gap-3 px-4 py-3 border-b border-wechat-divider hover:bg-wechat-bg text-left"
+            className="flex items-center border-b border-wechat-divider"
           >
-            <div className="flex-1 min-w-0">
-              <div className="text-[15px] truncate flex items-center gap-2">
-                {p.name}
-                {p.builtin && (
-                  <span className="text-[10px] px-1.5 py-0.5 bg-wechat-green/10 text-wechat-green rounded">
-                    内置
-                  </span>
+            {onSetActive && (
+              <button
+                onClick={() => onSetActive(p.id)}
+                className="p-3 shrink-0"
+                title={effectiveActiveId === p.id ? '当前使用中' : '设为使用中'}
+              >
+                {effectiveActiveId === p.id ? (
+                  <CheckCircle2 size={18} className="text-wechat-green" />
+                ) : (
+                  <div className="w-[18px] h-[18px] rounded-full border-2 border-wechat-divider" />
                 )}
+              </button>
+            )}
+            <button
+              onClick={() => onOpen(p.id)}
+              className={`flex-1 flex items-center gap-3 py-3 pr-4 hover:bg-wechat-bg text-left ${onSetActive ? '' : 'pl-4'}`}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="text-[15px] truncate flex items-center gap-2">
+                  {p.name}
+                  {p.builtin && (
+                    <span className="text-[10px] px-1.5 py-0.5 bg-wechat-green/10 text-wechat-green rounded">
+                      内置
+                    </span>
+                  )}
+                </div>
+                <div className="text-[12px] text-wechat-textGray">
+                  {p.slots.length} 个槽位 · {p.slots.filter((s) => s.enabled).length} 启用
+                </div>
               </div>
-              <div className="text-[12px] text-wechat-textGray">
-                {p.slots.length} 个槽位 · {p.slots.filter((s) => s.enabled).length} 启用
-              </div>
-            </div>
-            <ChevronRight size={18} className="text-wechat-textGray" />
-          </button>
+              <ChevronRight size={18} className="text-wechat-textGray" />
+            </button>
+          </div>
         ))}
         <button
           onClick={onCreate}

@@ -23,6 +23,8 @@ interface SettingsStore {
   setGroupFineMaxRounds: (rounds: number) => Promise<void>
   setGroupMemberPrivateChatRecent: (count: number) => Promise<void>
   setActiveUtilityPreset: (type: UtilityType, presetId: string) => Promise<void>
+  /** 设置全局默认的微信/场景预设（角色未单独指定时用这个） */
+  setDefaultPreset: (mode: 'im' | 'scene', presetId: string) => Promise<void>
   setActiveSoloCharacter: (characterId: string | undefined) => Promise<void>
 
   getUtilityEndpoint: () => ApiEndpoint | null
@@ -159,6 +161,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       ...cur,
       utilityPresetMap: { ...cur.utilityPresetMap, [type]: presetId },
     }
+    await db.settings.put(next)
+    set({ settings: next })
+  },
+
+  setDefaultPreset: async (mode, presetId) => {
+    const cur = get().settings
+    if (!cur) return
+    const next: Settings = mode === 'im'
+      ? { ...cur, defaultImPresetId: presetId }
+      : { ...cur, defaultScenePresetId: presetId }
     await db.settings.put(next)
     set({ settings: next })
   },
